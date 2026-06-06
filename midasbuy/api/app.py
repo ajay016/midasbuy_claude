@@ -2,6 +2,12 @@ import logging
 import os
 import django
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "midasbuy_project.settings")
 django.setup()
 

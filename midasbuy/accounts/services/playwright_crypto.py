@@ -1072,6 +1072,9 @@ def _call_api_in_cached_browser(
             try:
                 if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
                     _ensure_redeem_behavior(session)
+                    # Always emit a fingerprint snapshot on a redeem (even when the
+                    # session was already warm) so diagnostics are never missing.
+                    _log_risk_probe(session.page)
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
                 result = session.page.evaluate(_JS_CALL_API, {
                     "payloadJson": payload_json,
