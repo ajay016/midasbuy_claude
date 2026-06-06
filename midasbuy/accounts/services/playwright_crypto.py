@@ -79,6 +79,14 @@ _BEHAVIOR_REWARM_S     = float(os.getenv("MIDASBUY_BEHAVIOR_REWARM_S", "240"))
 _HEADFUL  = os.getenv("MIDASBUY_HEADFUL", "").lower() in ("1", "true", "yes", "on")
 _HEADLESS = not _HEADFUL
 
+# Full-context mode (default ON): load the complete redeem page without blocking
+# resources and wait for window.midas + the full tdrc reporting suite, so the
+# value-transfer request comes from the same kind of fully-booted session a real
+# user has — not a stripped page that only emits a partial risk profile.
+_FULL_CONTEXT = os.getenv("MIDASBUY_FULL_CONTEXT", "1").lower() in ("1", "true", "yes", "on")
+# Seconds to dwell after load so tdrc's device-FP + third-party vendor reports fire.
+_FULL_CONTEXT_SETTLE_MS = int(os.getenv("MIDASBUY_FULL_CONTEXT_SETTLE_MS", "6000"))
+
 # Risk/anti-fraud telemetry endpoints — logged so we can confirm tdrc.js is
 # actually loading and reporting (empty = warming is a no-op).
 _RISK_TELEMETRY_HINTS = (
@@ -689,6 +697,30 @@ def _ensure_redeem_behavior(session: "_CachedBrowserSession") -> None:
     _log_risk_probe(session.page)
 
 
+def _wait_for_full_sdk_and_telemetry(page) -> None:
+    """
+    Full-context warm-up: wait for the complete Midas SDK (window.midas) and give
+    tdrc.js time to run its full reporting suite (device FP -> /risk_control/report,
+    third-party vendors -> /risk_control/session, behavioral -> /cgi-bin/fp-behv).
+    Interleave genuine activity so the behavioral channel is non-empty too.
+    """
+    try:
+        page.wait_for_function(
+            "() => typeof window.midas !== 'undefined' && typeof window.midas.buyGoods === 'function'",
+            timeout=20_000,
+        )
+        logger.info("[CRYPTO] window.midas (full SDK) ready")
+    except Exception:
+        logger.warning("[CRYPTO] window.midas not detected — page may be partially booted")
+
+    # Activity + settle so the full tdrc suite reports before any redeem.
+    _simulate_human_activity(page, moves=8, scrolls=2, keys=True)
+    try:
+        page.wait_for_timeout(_FULL_CONTEXT_SETTLE_MS)
+    except Exception:
+        pass
+
+
 def _install_risk_telemetry_log(page) -> None:
     """
     Log requests to risk/anti-fraud telemetry endpoints. If nothing appears,
@@ -872,20 +904,35 @@ def _create_cached_session(
         browser, context = _launch_context(p, storage_state_path)
         page = context.new_page()
 
-        _setup_lightweight_routes(page)
+        # Full-context mode: do NOT block resources, so the complete app
+        # (window.midas) + the full tdrc.js reporting suite (device FP via
+        # /risk_control/report + third-party vendors + behavioral fp-behv) can
+        # run and establish a trusted session before any value-transfer call.
+        # The stripped/lightweight page only emitted fp-behv, leaving the risk
+        # backend with an incomplete profile -> forced graphic captcha.
+        if not _FULL_CONTEXT:
+            _setup_lightweight_routes(page)
         _setup_chaos_vm_protection(page)
         _install_risk_telemetry_log(page)
 
-        logger.info("[CRYPTO] warming cached page %s (headless=%s)", redeem_url, _HEADLESS)
-        page.goto(redeem_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        wait_state = "load" if _FULL_CONTEXT else "domcontentloaded"
+        logger.info(
+            "[CRYPTO] warming cached page %s (headless=%s full_context=%s)",
+            redeem_url, _HEADLESS, _FULL_CONTEXT,
+        )
+        page.goto(redeem_url, wait_until=wait_state, timeout=timeout_ms)
         logger.info("[CRYPTO] cached page ready url=%s", page.url)
 
         if not _wait_for_xmidas(page, session_dir, timeout_ms):
             raise RuntimeError("xMidas did not become ready")
 
-        # Light initial seeding so the session is never stone-cold (no long dwell
-        # here — read-only lookups stay fast; the full dwell is gated to redeems).
-        _simulate_human_activity(page, moves=4, scrolls=1, keys=False)
+        if _FULL_CONTEXT:
+            # Wait for the full SDK + let tdrc's full reporting suite complete.
+            _wait_for_full_sdk_and_telemetry(page)
+        else:
+            # Light initial seeding so the session is never stone-cold.
+            _simulate_human_activity(page, moves=4, scrolls=1, keys=False)
+
         _log_risk_probe(page)
 
         now = time.time()
@@ -1159,11 +1206,14 @@ def call_api_in_browser(
                 return None
 
             if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
+                if _FULL_CONTEXT:
+                    _wait_for_full_sdk_and_telemetry(page)
                 _simulate_human_activity(page, moves=12, scrolls=4, keys=True)
                 try:
                     page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
                 except Exception:
                     pass
+                _log_risk_probe(page)
 
             payload_json = json.dumps(payload, separators=(",", ":"))
             logger.info("[CRYPTO] calling in-browser fetch  endpoint=%s", endpoint)
