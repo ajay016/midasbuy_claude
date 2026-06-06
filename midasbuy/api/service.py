@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 _APPID = "1450015065"
 _PF    = "mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas"
 _BROWSER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-browser")
+# Separate thread for the captcha solver: it spins up its OWN sync_playwright,
+# which must NOT share a thread with the cached session's live Playwright loop
+# (that raises "Sync API inside the asyncio loop").
+_SOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-captcha")
 _QUERY_REDEEM_ENDPOINT = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo"
 
 
@@ -28,12 +32,18 @@ async def _run_browser_call(func, *args):
     return await loop.run_in_executor(_BROWSER_EXECUTOR, lambda: func(*args))
 
 
+async def _run_solver_call(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_SOLVER_EXECUTOR, lambda: func(*args))
+
+
 async def shutdown_browser_worker() -> None:
     from accounts.services.playwright_crypto import close_cached_browser_sessions
 
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_BROWSER_EXECUTOR, close_cached_browser_sessions)
     _BROWSER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    _SOLVER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 def _looks_like_encrypt_error(data: Optional[dict]) -> bool:
@@ -253,7 +263,7 @@ async def query_code_info(
             if source:
                 logger.info("[REDEEM] risk control hit — attempting captcha solve")
                 from accounts.services.playwright_crypto import solve_redeem_captcha_and_retry
-                solved = await _run_browser_call(
+                solved = await _run_solver_call(
                     solve_redeem_captcha_and_retry,
                     payload, source, storage_state_path, country_code,
                 )
