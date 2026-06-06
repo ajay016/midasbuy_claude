@@ -71,6 +71,21 @@ _BEHAVIOR_REQUIRED_ENDPOINTS = {
 _BEHAVIOR_HEARTBEAT_MS = int(os.getenv("MIDASBUY_BEHAVIOR_HEARTBEAT_MS", "11000"))
 _BEHAVIOR_REWARM_S     = float(os.getenv("MIDASBUY_BEHAVIOR_REWARM_S", "240"))
 
+# Headless vs headful. Headless Chromium has an atypical canvas/WebGL/GPU
+# fingerprint that Tencent's risk control scores as low-trust on value-transfer
+# endpoints (redeem) even when behavior looks human — so a graphic captcha is
+# forced. On a real desktop, headful (MIDASBUY_HEADFUL=1) uses the real GPU and
+# Chrome rendering stack, which is the single biggest fingerprint-trust lever.
+_HEADFUL  = os.getenv("MIDASBUY_HEADFUL", "").lower() in ("1", "true", "yes", "on")
+_HEADLESS = not _HEADFUL
+
+# Risk/anti-fraud telemetry endpoints — logged so we can confirm tdrc.js is
+# actually loading and reporting (empty = warming is a no-op).
+_RISK_TELEMETRY_HINTS = (
+    "harvestsharp", "fp-behv", "risk_control", "riskcontrol", "tdrc",
+    "captcha", "kepler", "forter", "online-metrix", "riskified",
+)
+
 # Local copy of the Chaos VM CDN script (served via page.route to avoid CDN latency)
 _CHAOS_VM_LOCAL_PATH = os.path.normpath(
     os.path.join(
@@ -671,6 +686,61 @@ def _ensure_redeem_behavior(session: "_CachedBrowserSession") -> None:
         pass
     session.behavior_warmed_at = time.time()
     logger.info("[CRYPTO] behavior seeding complete (dwell=%dms)", _BEHAVIOR_HEARTBEAT_MS)
+    _log_risk_probe(session.page)
+
+
+def _install_risk_telemetry_log(page) -> None:
+    """
+    Log requests to risk/anti-fraud telemetry endpoints. If nothing appears,
+    tdrc.js is NOT reporting behavior (so warming can't possibly help and the
+    real lever is the browser fingerprint / headful mode).
+    """
+    def on_request(req):
+        try:
+            u = req.url.lower()
+            if any(h in u for h in _RISK_TELEMETRY_HINTS):
+                logger.info("[RISK-TELEMETRY] %s %s", req.method, req.url[:160])
+        except Exception:
+            pass
+
+    page.on("request", on_request)
+
+
+_JS_RISK_PROBE = """
+() => {
+    const fonts = (() => { try { return document.fonts ? document.fonts.size : -1; } catch(e){ return -2; } })();
+    let webglVendor = '', webglRenderer = '';
+    try {
+        const gl = document.createElement('canvas').getContext('webgl');
+        const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+        if (dbg) { webglVendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+                   webglRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
+    } catch(e) {}
+    return {
+        webdriver:    navigator.webdriver,
+        hasXT:        !!window._XT,                 // tdrc.js config present?
+        xtLen:        (window._XT && window._XT.length) || 0,
+        hasMidas:     typeof window.midas,
+        hasNewRC:     typeof (window.midas && window.midas.newRiskControl),
+        hasChaosVM:   typeof window.xMidas,
+        uuidCookie:   /UUID=/.test(document.cookie),
+        plugins:      navigator.plugins.length,
+        fonts,
+        webglVendor, webglRenderer,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        ua:           navigator.userAgent.slice(0, 80),
+    };
+}
+"""
+
+
+def _log_risk_probe(page) -> None:
+    """One-shot snapshot of the signals risk-control scores. Send these to debug."""
+    try:
+        diag = page.evaluate(_JS_RISK_PROBE)
+        logger.info("[RISK-PROBE] %s", json.dumps(diag, default=str))
+    except Exception as exc:
+        logger.warning("[RISK-PROBE] failed: %s", exc)
 
 
 def _load_session_storage(storage_state_path: str) -> dict:
@@ -691,7 +761,7 @@ def _launch_context(p, storage_state_path: str):
     ss_data = _load_session_storage(storage_state_path)
 
     browser = p.chromium.launch(
-        headless=True,
+        headless=_HEADLESS,
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -804,8 +874,9 @@ def _create_cached_session(
 
         _setup_lightweight_routes(page)
         _setup_chaos_vm_protection(page)
+        _install_risk_telemetry_log(page)
 
-        logger.info("[CRYPTO] warming cached page %s", redeem_url)
+        logger.info("[CRYPTO] warming cached page %s (headless=%s)", redeem_url, _HEADLESS)
         page.goto(redeem_url, wait_until="domcontentloaded", timeout=timeout_ms)
         logger.info("[CRYPTO] cached page ready url=%s", page.url)
 
@@ -815,6 +886,7 @@ def _create_cached_session(
         # Light initial seeding so the session is never stone-cold (no long dwell
         # here — read-only lookups stay fast; the full dwell is gated to redeems).
         _simulate_human_activity(page, moves=4, scrolls=1, keys=False)
+        _log_risk_probe(page)
 
         now = time.time()
         return _CachedBrowserSession(
