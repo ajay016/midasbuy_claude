@@ -379,6 +379,179 @@ async ({payloadJson}) => {
 }
 """
 
+# ── Redeem COMMIT (window.midas.buyGoods) ───────────────────────────────────────
+#
+# PROVISIONAL — needs validation against live traffic. From the bundle trace:
+#   commit = window.midas.buyGoods(em, {onMessage})
+#   buyGoods -> _getPayUrl(em,'v3') (requires appid,pf,openid,currency_type,
+#               productid) -> _processUrl form-POSTs `em` into an iframe target
+#               (redeemCodeChannelIframe); the iframe submits the real order and
+#               reports back via postMessage (a key=value&... querystring).
+#
+# There is NO standalone JSON commit endpoint. We assemble `em` in-page from
+# window.SERVER_DATA.payInfo + the successful QueryRedeemCodeInfo response
+# (offer productid / shop_id) + the #xMidasToken DOM inputs, create a hidden
+# iframe target, drive buyGoods, and capture every postMessage. FLEXIBLE_RISK_
+# CONTROL is handled via window.midas.newRiskControl(source) -> POST
+# /h5/overseah5/v1/secondary_order. The Python side ALSO records the network
+# request/response so a live run yields the ground-truth order payload even if
+# this assembly is incomplete.
+_JS_COMMIT_REDEEM = """
+async ({redeemCode, roleId, redeemInfoJson, timeoutMs}) => {
+    const log = [];
+    const messages = [];
+    try {
+        // tokens + xMidas must be ready
+        let w = 0;
+        while ((typeof window.midas === 'undefined' || typeof window.midas.buyGoods !== 'function') && w < 150) {
+            await new Promise(r => setTimeout(r, 100)); w++;
+        }
+        if (!window.midas || typeof window.midas.buyGoods !== 'function')
+            return {error: 'no_buyGoods', midasType: typeof window.midas};
+
+        const sd       = window.SERVER_DATA || {};
+        const payInfo  = sd.payInfo  || {};
+        const shopInfo = sd.shopInfo || {};
+        let redeemInfo = {};
+        try { redeemInfo = JSON.parse(redeemInfoJson || '{}'); } catch(e) {}
+
+        // Offer fields come from the successful QueryRedeemCodeInfo response.
+        // Field names are best-guess until we capture a real success payload —
+        // we log the whole thing so the shape can be confirmed.
+        const rinfo    = redeemInfo.redeem_code_info || redeemInfo.redeemCodeInfo || redeemInfo;
+        const products = rinfo.products || rinfo.product_list || [];
+        const product  = products[0] || rinfo.product || {};
+        const productid = product.productid || product.product_id || product.offer_id
+                        || rinfo.productid || rinfo.product_id || '';
+
+        const tokenEl   = document.getElementById('xMidasToken');
+        const versionEl = document.getElementById('xMidasVersion');
+
+        // Hidden iframe target that _processUrl will POST the order into.
+        let iframe = document.getElementById('redeemCodeChannelIframe');
+        if (!iframe) {
+            iframe = document.createElement('iframe');
+            iframe.id = 'redeemCodeChannelIframe';
+            iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;border:0;';
+            document.body.appendChild(iframe);
+        }
+
+        const returnUrl = location.origin + location.pathname;
+        const em = {
+            appid:         payInfo.appid || '1450015065',
+            pf:            payInfo.pf || 'mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas',
+            pfkey:         payInfo.pfkey || 'pfKey',
+            openid:        payInfo.openid || roleId || '',
+            zoneid:        String(payInfo.zoneid || payInfo.zone_id || '1'),
+            country:       (payInfo.country || sd.country || 'BD').toUpperCase(),
+            currency_type: product.currency_type || payInfo.currency_type || 'USD',
+            shop_id:       shopInfo.shop_id || shopInfo.shopId || rinfo.shop_id || payInfo.shop_id || '',
+            productid:     String(productid),
+            num:           String(product.num || 1),
+            quantity:      1,
+            version:       'midasbuy_v2',
+            // ← the 18-char redeem code (merged onto em via arg-3 in the real flow)
+            redeem_code:   redeemCode,
+            channel:       'midasbuy_redeem',
+            subchannel:    'midasbuy_redeem',
+            id:            'MIDASBUY_REDEEM',
+            buyTypeKey:    'REDEEM',
+            buy_type_key:  'REDEEM',
+            successUrl:    returnUrl + '/success?isFromJsx=true&buy_type_key=REDEEM',
+            pendingUrl:    returnUrl,
+            failUrl:       returnUrl,
+            useIFrame:     '1',
+            usePost:       '1',
+            newtab:        '0',
+            ctoken:        tokenEl ? tokenEl.value : '',
+            ctoken_ver:    (versionEl && versionEl.value) ? versionEl.value : '1.0.1',
+            target:        iframe.contentWindow,
+        };
+        log.push('em assembled productid=' + em.productid + ' shop_id=' + em.shop_id + ' openid=' + em.openid);
+
+        const finished = {done: false, result: null};
+        const onMsg = (e) => {
+            try {
+                let raw = e;
+                if (typeof e === 'string') {
+                    const o = {}; e.split('&').forEach(kv => {
+                        const i = kv.indexOf('='); if (i>0) o[decodeURIComponent(kv.slice(0,i))] = decodeURIComponent(kv.slice(i+1));
+                    }); raw = o;
+                }
+                messages.push(raw);
+                const status = raw.status || raw.orderStatus || raw.orderInfo?.status;
+                if (status === 'success' || raw.orderInfo?.status === 'Created') {
+                    finished.done = true; finished.result = {outcome: 'success', data: raw};
+                } else if (status === 'error') {
+                    finished.done = true; finished.result = {outcome: 'error', data: raw};
+                }
+            } catch(err) { log.push('onMsg err ' + err); }
+        };
+
+        // Capture iframe -> parent postMessages too (the real result channel).
+        window.addEventListener('message', (ev) => {
+            try { if (ev && ev.data !== undefined) onMsg(ev.data); } catch(e) {}
+        }, false);
+
+        try {
+            window.midas.buyGoods(em, {onMessage: onMsg});
+            log.push('buyGoods invoked');
+        } catch(err) {
+            return {error: 'buyGoods_threw', detail: String(err), log};
+        }
+
+        const deadline = Date.now() + (timeoutMs || 25000);
+        while (!finished.done && Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 200));
+
+            // Risk-control branch: a message carrying FLEXIBLE_RISK_CONTROL.
+            const rc = messages.find(m => {
+                const d = (() => { try { return typeof m.data === 'string' ? JSON.parse(m.data) : (m.data || m); } catch(e) { return m; } })();
+                return d && (d.name === 'FLEXIBLE_RISK_CONTROL' || String(d.err_code||'').startsWith('FLEXIBLE_RISK_CONTROL'));
+            });
+            if (rc && typeof window.midas.newRiskControl === 'function') {
+                try {
+                    const d = (() => { try { return typeof rc.data === 'string' ? JSON.parse(rc.data) : (rc.data || rc); } catch(e) { return rc; } })();
+                    const source = d.details?.[0]?.source || d.source;
+                    log.push('risk-control challenge source=' + source);
+                    const tok = await window.midas.newRiskControl(source);
+                    log.push('newRiskControl -> rc_uuid=' + (tok && tok.rc_uuid));
+                    if (tok && tok.rc_token && tok.rc_uuid) {
+                        const resp = await fetch(location.origin + '/h5/overseah5/v1/secondary_order', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({rc_token: tok.rc_token, rc_uuid: tok.rc_uuid, channel: 'MIDASBUY_REDEEM'}),
+                            credentials: 'include',
+                        });
+                        const sj = await resp.json().catch(() => ({}));
+                        log.push('secondary_order status=' + resp.status);
+                        if (sj?.orderInfo?.status === 'Created') {
+                            finished.done = true; finished.result = {outcome: 'success', data: sj, viaRiskControl: true};
+                        } else {
+                            finished.done = true; finished.result = {outcome: 'risk_control', data: sj, viaRiskControl: true};
+                        }
+                    } else {
+                        finished.done = true; finished.result = {outcome: 'risk_control', data: {note: 'newRiskControl returned no token'}};
+                    }
+                } catch(err) { log.push('risk-control handling err ' + err); }
+            }
+        }
+
+        return {
+            ok: true,
+            finished: finished.done,
+            result: finished.result,
+            messages,
+            em_debug: Object.assign({}, em, {target: undefined}),
+            redeem_info_seen: redeemInfo,
+            log,
+        };
+    } catch(e) {
+        return {error: 'js_exception', detail: String(e), stack: (e.stack||'').slice(0,500), log};
+    }
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -934,6 +1107,134 @@ def call_api_in_browser(
     except Exception:
         logger.exception("[CRYPTO] call_api_in_browser crashed")
         return None
+
+
+# ── Redeem COMMIT driver ────────────────────────────────────────────────────────
+
+_COMMIT_CAPTURE_HINTS = ("order", "secondary", "/pay", "provide", "shelfproto", "trade")
+
+
+def _install_order_capture(page, sink: list) -> None:
+    """
+    Log every request/response that looks like order/payment traffic so a live
+    redeem yields the ground-truth commit endpoint + payload even if our in-page
+    `em` assembly is incomplete. This is the mechanism that lets us finalize the
+    commit against real data.
+    """
+    def _interesting(url: str) -> bool:
+        u = url.lower()
+        return any(h in u for h in _COMMIT_CAPTURE_HINTS)
+
+    def on_request(req):
+        try:
+            if _interesting(req.url):
+                entry = {"kind": "request", "method": req.method, "url": req.url}
+                try:
+                    entry["post_data"] = req.post_data
+                except Exception:
+                    entry["post_data"] = None
+                sink.append(entry)
+                logger.info("[COMMIT] >> %s %s", req.method, req.url)
+                if entry.get("post_data"):
+                    logger.info("[COMMIT]    payload=%s", str(entry["post_data"])[:1500])
+        except Exception:
+            pass
+
+    def on_response(resp):
+        try:
+            if _interesting(resp.url):
+                body = None
+                try:
+                    body = resp.text()
+                except Exception:
+                    body = None
+                sink.append({"kind": "response", "status": resp.status, "url": resp.url, "body": body})
+                logger.info("[COMMIT] << %s %s", resp.status, resp.url)
+                if body:
+                    logger.info("[COMMIT]    response=%s", str(body)[:1500])
+        except Exception:
+            pass
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+
+
+def commit_redeem_in_browser(
+    redeem_info: dict,
+    redeem_code: str,
+    role_id: str,
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 60_000,
+) -> Optional[dict]:
+    """
+    Drive window.midas.buyGoods for the redeem commit on a dedicated page (kept
+    separate from the cached API page so its DOM state is not disturbed).
+
+    PROVISIONAL: the order bag assembly is best-effort until validated against a
+    real successful QueryRedeemCodeInfo + order capture. The returned dict always
+    includes `network` (captured order/payment traffic) so the live request can
+    be inspected and the commit finalized.
+    """
+    sync_playwright, PWTimeout = _get_playwright()
+
+    redeem_url  = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
+    session_dir = os.path.dirname(storage_state_path)
+    network: list = []
+
+    try:
+        with sync_playwright() as p:
+            browser, context = _launch_context(p, storage_state_path)
+            page = context.new_page()
+
+            _setup_chaos_vm_protection(page)
+            _install_order_capture(page, network)
+
+            logger.info("[COMMIT] navigating to %s", redeem_url)
+            try:
+                page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
+            except PWTimeout:
+                logger.error("[COMMIT] page.goto timed out")
+                _save_debug(page, session_dir, "commit_timeout")
+                browser.close()
+                return {"ok": False, "error": "goto_timeout", "network": network}
+
+            if not _wait_for_xmidas(page, session_dir, timeout_ms):
+                browser.close()
+                return {"ok": False, "error": "no_xmidas", "network": network}
+
+            # Behaviour first so the commit is not flagged by risk-control.
+            _simulate_human_activity(page, moves=12, scrolls=4, keys=True)
+            try:
+                page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
+            except Exception:
+                pass
+
+            logger.info("[COMMIT] driving buyGoods for code=***%s", redeem_code[-4:] if redeem_code else "")
+            result = page.evaluate(_JS_COMMIT_REDEEM, {
+                "redeemCode":     redeem_code,
+                "roleId":         role_id,
+                "redeemInfoJson": json.dumps(redeem_info or {}),
+                "timeoutMs":      min(timeout_ms, 30_000),
+            })
+
+            _save_debug(page, session_dir, "commit_done")
+            browser.close()
+
+            if not isinstance(result, dict):
+                result = {"ok": False, "error": "no_result"}
+            result["network"] = network
+            logger.info(
+                "[COMMIT] result finished=%s outcome=%s captured=%d",
+                result.get("finished"),
+                (result.get("result") or {}).get("outcome"),
+                len(network),
+            )
+            return result
+
+    except Exception:
+        logger.exception("[COMMIT] commit_redeem_in_browser crashed")
+        return {"ok": False, "error": "exception", "network": network}
 
 
 def get_browser_payload(

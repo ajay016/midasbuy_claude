@@ -269,6 +269,36 @@ async def query_code_info(
 
 # ── Redeem submit ─────────────────────────────────────────────────────────────
 
+def _commit_outcome_message(commit: dict) -> tuple[bool, str]:
+    """Map the browser commit result to (success, message)."""
+    if not isinstance(commit, dict):
+        return False, "Commit failed: no result from browser."
+
+    if commit.get("error"):
+        return False, f"Commit could not run: {commit.get('error')}."
+
+    result = commit.get("result") or {}
+    outcome = result.get("outcome")
+    if outcome == "success":
+        order_no = (result.get("data") or {}).get("order_no") or \
+                   (result.get("data") or {}).get("orderInfo", {}).get("order_no")
+        return True, f"Redeem code committed successfully. order_no={order_no or 'n/a'}."
+    if outcome == "error":
+        data = result.get("data") or {}
+        return False, data.get("error_message") or data.get("msg") or "Redemption was rejected by Midasbuy."
+    if outcome == "risk_control":
+        return False, (
+            "Commit reached risk-control verification and could not auto-complete. "
+            "The captcha needs to be satisfied; see captured network traffic in logs."
+        )
+    if not commit.get("finished"):
+        return False, (
+            "Commit driver did not observe a final order result (provisional flow). "
+            "The order/payment traffic was captured in logs for finalization."
+        )
+    return False, "Commit finished without a recognized outcome; see logs."
+
+
 async def submit_redeem(
     player_id: str,
     pin_code: str,
@@ -280,11 +310,20 @@ async def submit_redeem(
     if not check.success:
         return check
 
-    return RedeemResponse(
-        success=True,
-        message=(
-            "Redeem code query succeeded. Final redemption confirmation is not implemented yet; "
-            "capture the successful confirmation request when Midasbuy is available."
-        ),
-        raw=check.raw,
+    # Query passed → drive the real commit (window.midas.buyGoods) in the browser.
+    clean_code = "".join(pin_code.split())
+    from accounts.services.playwright_crypto import commit_redeem_in_browser
+
+    commit = await _run_browser_call(
+        commit_redeem_in_browser,
+        check.raw or {},
+        clean_code,
+        player_id,
+        storage_state_path,
+        country_code,
     )
+
+    success, message = _commit_outcome_message(commit or {})
+    raw = {"query": check.raw, "commit": commit}
+    logger.info("[REDEEM] commit outcome success=%s message=%s", success, message)
+    return RedeemResponse(success=success, message=message, raw=raw)
