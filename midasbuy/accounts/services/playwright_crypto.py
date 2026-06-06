@@ -321,6 +321,87 @@ async ({payloadJson, endpoint, method}) => {
 }
 """
 
+# ── MAIN-WORLD bridge ───────────────────────────────────────────────────────────
+# patchright runs page.evaluate in an ISOLATED world where window.SERVER_DATA /
+# __Report_INFO are not visible, so the request's publicParams/cgi_extend went
+# out with empty device_id/muid — breaking the device correlation that the
+# value-transfer (redeem) endpoint checks, which forced the graphic captcha.
+# This static script is injected as a real <script> element so it executes in the
+# page MAIN world (with bypass_csp), reads its input from a DOM element, builds
+# the request from the REAL globals, encrypts + fetches, and writes the JSON
+# result back to a DOM element the isolated world can poll.
+_JS_MAINWORLD_BRIDGE = r"""
+(function(){
+  var me = document.currentScript;
+  var nonce = me && me.getAttribute('data-nonce');
+  function out(o){ var el = document.getElementById('__mds_out_'+nonce); if (el) el.textContent = JSON.stringify(o); }
+  (async function(){
+    try {
+      var input = JSON.parse(document.getElementById('__mds_in_'+nonce).textContent);
+      var payloadJson = input.payloadJson, endpoint = input.endpoint, method = input.method || 'POST';
+
+      var tokenEl = document.getElementById('xMidasToken');
+      if (!tokenEl || !tokenEl.value) { out({error:'no_xmidas_token'}); return; }
+      if (typeof window.xMidas !== 'function') { out({error:'no_xmidas_function'}); return; }
+      var ctoken = tokenEl.value;
+      var versionEl = document.getElementById('xMidasVersion');
+      var ctoken_ver = (versionEl && versionEl.value) ? versionEl.value : '1.0.1';
+
+      var sd = window.SERVER_DATA || {};
+      var payInfo = sd.payInfo || {};
+      var shopInfo = sd.shopInfo || {};
+      var ri = window.__Report_INFO || {};
+      var rp = sd.reportParams || {};
+      var qs = function(o){ return Object.keys(o).filter(function(k){return o[k]!=null;})
+        .map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k]);}).join('&'); };
+      var device_id = rp.midasbuyDeviceId || ri.midasbuyDeviceId || '';
+      var muid = rp.midasuid || ri.midasuid || '';
+      var m = document.cookie.match(/UUID=([^;]*)/);
+      var tdrc_fp = m ? m[1] : '';
+      var cgi_extend_obj = {device_id: device_id, pagetoken: '', tdrc_fp: tdrc_fp, muid: muid};
+      var cgi_extend = qs(cgi_extend_obj);
+      var drm_info = qs(payInfo.drm_info || {});
+      var buyType = sd.buyType || (location.pathname.indexOf('/redeem/') >= 0 ? 'REDEEM' : '');
+      var publicParams = {
+        appid: payInfo.appid || sd.appid || '1450015065',
+        pf: payInfo.pf || 'mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas',
+        zoneid: String(payInfo.zoneid || payInfo.zone_id || (payInfo.currentBindUser && payInfo.currentBindUser.zoneid) || '1'),
+        country: (payInfo.country || sd.country || 'BD').toUpperCase(),
+        cgi_extend: cgi_extend, drm_info: drm_info,
+        midasbuyArea: payInfo.midasbuyArea || sd.midasbuyArea || '',
+        shopcode: shopInfo.shopcode || '', buyType: buyType, midas_sdk: '1',
+        currency_type: payInfo.currency_type || sd.currency_type || 'USD',
+        _id: Math.random(), sc: '', from: '', task_token: '', cgi_extend_obj: cgi_extend_obj
+      };
+      var actualPayload = JSON.parse(payloadJson);
+      var fullPayload = Object.assign({}, publicParams, actualPayload);
+      for (var k in fullPayload) { if (fullPayload[k] !== undefined && typeof fullPayload[k] !== 'object') fullPayload[k] = String(fullPayload[k]); }
+      var fullJson = JSON.stringify(fullPayload);
+
+      try { window.xMidas(); } catch(e) {}
+      var hexResult = window.xMidas({d: fullJson});
+      if (!hexResult || typeof hexResult !== 'string' || hexResult.length === 0) { out({error:'xmidas_empty'}); return; }
+      var bytes = (hexResult.match(/../g) || []).map(function(h){ return parseInt(h,16); });
+      var bin = ''; for (var i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+      var encrypt_msg = btoa(bin);
+
+      var resp = await fetch('https://www.midasbuy.com' + endpoint, {
+        method: method,
+        headers: {'Content-Type':'application/json','Accept':'application/json, text/plain, */*'},
+        body: JSON.stringify({encrypt_msg: encrypt_msg, ctoken_ver: ctoken_ver, ctoken: ctoken}),
+        credentials: 'include'
+      });
+      var text = await resp.text();
+      var data; try { data = JSON.parse(text); } catch(e) { out({error:'invalid_json', status: resp.status, text: text.substring(0,300)}); return; }
+      out({ok:true, status: resp.status, data: data, encrypt_msg_len: encrypt_msg.length,
+        debug:{mainWorld:true, serverData:!!window.SERVER_DATA, device_id_len: device_id.length,
+               muid_len: muid.length, tdrc_fp_len: tdrc_fp.length, zoneid: publicParams.zoneid,
+               country: publicParams.country, shopcode: publicParams.shopcode, midasbuyArea: publicParams.midasbuyArea}});
+    } catch(e) { out({error:'js_exception', detail: String(e)}); }
+  })();
+})();
+"""
+
 _JS_ENCRYPT_ONLY = """
 async ({payloadJson}) => {
     try {
@@ -811,6 +892,8 @@ def _launch_context(p, storage_state_path: str):
         ),
         locale="en-US",
         timezone_id="America/New_York",
+        # Allow our main-world bridge <script> to execute despite the page CSP.
+        bypass_csp=True,
     )
 
     context.add_init_script(_STEALTH_JS)
@@ -1098,6 +1181,61 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
     return result.get("data")
 
 
+def _evaluate_in_main_world(page, payload: dict, endpoint: str, method: str, timeout_ms: int) -> Optional[dict]:
+    """
+    Run the encrypt+fetch in the page MAIN world (via an injected <script>) so the
+    request carries the REAL device_id/muid/SERVER_DATA, then poll a DOM element
+    for the JSON result. Returns the same {ok/status/data/...} shape as _JS_CALL_API.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+    try:
+        from patchright.sync_api import TimeoutError as PWTimeout  # noqa: F811
+    except ImportError:
+        pass
+
+    nonce = os.urandom(8).hex()
+    payload_json = json.dumps(payload, separators=(",", ":"))
+
+    page.evaluate(
+        """(a) => {
+            const inEl = document.createElement('div');
+            inEl.id = '__mds_in_' + a.nonce; inEl.style.display = 'none';
+            inEl.textContent = JSON.stringify({payloadJson: a.payloadJson, endpoint: a.endpoint, method: a.method});
+            document.documentElement.appendChild(inEl);
+            const outEl = document.createElement('div');
+            outEl.id = '__mds_out_' + a.nonce; outEl.style.display = 'none';
+            document.documentElement.appendChild(outEl);
+            const s = document.createElement('script');
+            s.setAttribute('data-nonce', a.nonce);
+            s.textContent = a.code;
+            document.documentElement.appendChild(s);
+        }""",
+        {"nonce": nonce, "payloadJson": payload_json, "endpoint": endpoint,
+         "method": method, "code": _JS_MAINWORLD_BRIDGE},
+    )
+
+    try:
+        page.wait_for_function(
+            "(nonce) => { const el = document.getElementById('__mds_out_' + nonce); return !!(el && el.textContent); }",
+            arg=nonce,
+            timeout=timeout_ms,
+        )
+    except PWTimeout:
+        logger.warning("[CRYPTO] main-world bridge produced no result within %dms", timeout_ms)
+        return None
+
+    raw = page.evaluate("(nonce) => document.getElementById('__mds_out_' + nonce).textContent", nonce)
+    try:
+        result = json.loads(raw) if raw else None
+    except Exception:
+        logger.warning("[CRYPTO] main-world bridge returned non-JSON")
+        return None
+
+    if isinstance(result, dict) and result.get("debug"):
+        logger.info("[CRYPTO] main-world request debug=%s", json.dumps(result["debug"]))
+    return result
+
+
 def _call_api_in_cached_browser(
     payload: dict,
     endpoint: str,
@@ -1117,17 +1255,28 @@ def _call_api_in_cached_browser(
 
         with session.lock:
             try:
-                if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
+                is_redeem = endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS
+                if is_redeem:
                     _ensure_redeem_behavior(session)
                     # Always emit a fingerprint snapshot on a redeem (even when the
                     # session was already warm) so diagnostics are never missing.
                     _log_risk_probe(session.page)
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
-                result = session.page.evaluate(_JS_CALL_API, {
-                    "payloadJson": payload_json,
-                    "endpoint":    endpoint,
-                    "method":      method,
-                })
+
+                result = None
+                if is_redeem:
+                    # Value-transfer endpoints MUST carry the real device_id/muid,
+                    # so build+send the request in the page MAIN world.
+                    logger.info("[CRYPTO] using main-world bridge for %s", endpoint)
+                    result = _evaluate_in_main_world(
+                        session.page, payload, endpoint, method, min(timeout_ms, 40_000),
+                    )
+                if result is None:
+                    result = session.page.evaluate(_JS_CALL_API, {
+                        "payloadJson": payload_json,
+                        "endpoint":    endpoint,
+                        "method":      method,
+                    })
                 session.last_used = time.time()
             except Exception:
                 logger.exception("[CRYPTO] cached page evaluate failed")
