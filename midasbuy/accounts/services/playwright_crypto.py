@@ -880,6 +880,10 @@ _SLIDER_SELECTORS = (
 # Solver browser runs headful by default so the slider renders for solving and
 # can be watched/assisted; set MIDASBUY_SOLVER_HEADLESS=1 to force headless.
 _SOLVER_HEADLESS = os.getenv("MIDASBUY_SOLVER_HEADLESS", "").lower() in ("1", "true", "yes", "on")
+# Manual mode: don't auto-drag — wait for the human to solve the slider in the
+# headful window, then capture the token + run the retry (tests the whole
+# downstream pipeline and the real token format).
+_CAPTCHA_MANUAL = os.getenv("MIDASBUY_CAPTCHA_MANUAL", "").lower() in ("1", "true", "yes", "on")
 
 
 def _install_net_capture(page, sink: list, session_dir: Optional[str] = None) -> None:
@@ -1068,9 +1072,13 @@ def solve_redeem_captcha_and_retry(
             )
 
             token = None
-            deadline = time.time() + timeout_ms / 1000.0
+            # Give a human time to solve in manual mode.
+            deadline = time.time() + (max(timeout_ms / 1000.0, 240) if _CAPTCHA_MANUAL else timeout_ms / 1000.0)
             attempts = 0
             max_attempts = int(os.getenv("MIDASBUY_CAPTCHA_MAX_ATTEMPTS", "2"))
+            diag_done = False
+            if _CAPTCHA_MANUAL:
+                logger.warning("[CAPTCHA] MANUAL mode — solve the slider in the browser window; waiting...")
 
             def _poll_token():
                 out = page.evaluate(
@@ -1094,6 +1102,22 @@ def solve_redeem_captcha_and_retry(
                 if not sel:
                     page.wait_for_timeout(500)
                     continue
+
+                if _CAPTCHA_MANUAL:
+                    # Don't drag — just save a gap-detection diagnostic once, then
+                    # wait for the human to solve it.
+                    if not diag_done and captcha_imgs.get("1"):
+                        try:
+                            captcha_solver.detect_gap_offset(
+                                captcha_imgs["1"],
+                                save_debug_path=os.path.join(session_dir, "captcha_bg_1.png"),
+                            )
+                        except Exception:
+                            pass
+                        diag_done = True
+                    page.wait_for_timeout(1000)
+                    continue
+
                 if attempts >= max_attempts:
                     # Don't keep dragging — that's what triggers "Operation too
                     # often". Just wait for the pending verify to resolve.
