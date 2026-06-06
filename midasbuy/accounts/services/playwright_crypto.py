@@ -44,7 +44,6 @@ class _CachedBrowserSession:
     storage_mtime: float
     created_at: float
     last_used: float
-    behavior_warmed_at: float = 0.0
     lock: Lock = field(default_factory=Lock)
 
 
@@ -54,45 +53,6 @@ _CACHED_ENDPOINTS = {
     "/interface/getCharac",
     "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
 }
-
-# ── Behavioral warming (anti risk-control) ──────────────────────────────────────
-# Midasbuy's tdrc.js streams a behavioral heartbeat (mouse coords / click / key
-# counts) to /cgi-bin/fp-behv every ~10s, and SUPPRESSES the report entirely when
-# there was no real interaction (its msgIsValid check). A headless session that
-# loads the page then immediately fetch()es a value-transfer endpoint (redeem)
-# emits zero behavior, so the server scores it as a bot and returns
-# FLEXIBLE_RISK_CONTROL:graphic. Read-only getCharac is scored leniently and is
-# unaffected. Before a value-transfer call we therefore seed genuine pointer /
-# scroll / key activity and dwell long enough for at least one *populated*
-# heartbeat to fire. Tunable via env so it can be adjusted without code changes.
-_BEHAVIOR_REQUIRED_ENDPOINTS = {
-    "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
-}
-_BEHAVIOR_HEARTBEAT_MS = int(os.getenv("MIDASBUY_BEHAVIOR_HEARTBEAT_MS", "11000"))
-_BEHAVIOR_REWARM_S     = float(os.getenv("MIDASBUY_BEHAVIOR_REWARM_S", "240"))
-
-# Headless vs headful. Headless Chromium has an atypical canvas/WebGL/GPU
-# fingerprint that Tencent's risk control scores as low-trust on value-transfer
-# endpoints (redeem) even when behavior looks human — so a graphic captcha is
-# forced. On a real desktop, headful (MIDASBUY_HEADFUL=1) uses the real GPU and
-# Chrome rendering stack, which is the single biggest fingerprint-trust lever.
-_HEADFUL  = os.getenv("MIDASBUY_HEADFUL", "").lower() in ("1", "true", "yes", "on")
-_HEADLESS = not _HEADFUL
-
-# Full-context mode (default ON): load the complete redeem page without blocking
-# resources and wait for window.midas + the full tdrc reporting suite, so the
-# value-transfer request comes from the same kind of fully-booted session a real
-# user has — not a stripped page that only emits a partial risk profile.
-_FULL_CONTEXT = os.getenv("MIDASBUY_FULL_CONTEXT", "1").lower() in ("1", "true", "yes", "on")
-# Seconds to dwell after load so tdrc's device-FP + third-party vendor reports fire.
-_FULL_CONTEXT_SETTLE_MS = int(os.getenv("MIDASBUY_FULL_CONTEXT_SETTLE_MS", "6000"))
-
-# Risk/anti-fraud telemetry endpoints — logged so we can confirm tdrc.js is
-# actually loading and reporting (empty = warming is a no-op).
-_RISK_TELEMETRY_HINTS = (
-    "harvestsharp", "fp-behv", "risk_control", "riskcontrol", "tdrc",
-    "captcha", "kepler", "forter", "online-metrix", "riskified",
-)
 
 # Local copy of the Chaos VM CDN script (served via page.route to avoid CDN latency)
 _CHAOS_VM_LOCAL_PATH = os.path.normpath(
@@ -321,87 +281,6 @@ async ({payloadJson, endpoint, method}) => {
 }
 """
 
-# ── MAIN-WORLD bridge ───────────────────────────────────────────────────────────
-# patchright runs page.evaluate in an ISOLATED world where window.SERVER_DATA /
-# __Report_INFO are not visible, so the request's publicParams/cgi_extend went
-# out with empty device_id/muid — breaking the device correlation that the
-# value-transfer (redeem) endpoint checks, which forced the graphic captcha.
-# This static script is injected as a real <script> element so it executes in the
-# page MAIN world (with bypass_csp), reads its input from a DOM element, builds
-# the request from the REAL globals, encrypts + fetches, and writes the JSON
-# result back to a DOM element the isolated world can poll.
-_JS_MAINWORLD_BRIDGE = r"""
-(function(){
-  var me = document.currentScript;
-  var nonce = me && me.getAttribute('data-nonce');
-  function out(o){ var el = document.getElementById('__mds_out_'+nonce); if (el) el.textContent = JSON.stringify(o); }
-  (async function(){
-    try {
-      var input = JSON.parse(document.getElementById('__mds_in_'+nonce).textContent);
-      var payloadJson = input.payloadJson, endpoint = input.endpoint, method = input.method || 'POST';
-
-      var tokenEl = document.getElementById('xMidasToken');
-      if (!tokenEl || !tokenEl.value) { out({error:'no_xmidas_token'}); return; }
-      if (typeof window.xMidas !== 'function') { out({error:'no_xmidas_function'}); return; }
-      var ctoken = tokenEl.value;
-      var versionEl = document.getElementById('xMidasVersion');
-      var ctoken_ver = (versionEl && versionEl.value) ? versionEl.value : '1.0.1';
-
-      var sd = window.SERVER_DATA || {};
-      var payInfo = sd.payInfo || {};
-      var shopInfo = sd.shopInfo || {};
-      var ri = window.__Report_INFO || {};
-      var rp = sd.reportParams || {};
-      var qs = function(o){ return Object.keys(o).filter(function(k){return o[k]!=null;})
-        .map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k]);}).join('&'); };
-      var device_id = rp.midasbuyDeviceId || ri.midasbuyDeviceId || '';
-      var muid = rp.midasuid || ri.midasuid || '';
-      var m = document.cookie.match(/UUID=([^;]*)/);
-      var tdrc_fp = m ? m[1] : '';
-      var cgi_extend_obj = {device_id: device_id, pagetoken: '', tdrc_fp: tdrc_fp, muid: muid};
-      var cgi_extend = qs(cgi_extend_obj);
-      var drm_info = qs(payInfo.drm_info || {});
-      var buyType = sd.buyType || (location.pathname.indexOf('/redeem/') >= 0 ? 'REDEEM' : '');
-      var publicParams = {
-        appid: payInfo.appid || sd.appid || '1450015065',
-        pf: payInfo.pf || 'mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas',
-        zoneid: String(payInfo.zoneid || payInfo.zone_id || (payInfo.currentBindUser && payInfo.currentBindUser.zoneid) || '1'),
-        country: (payInfo.country || sd.country || 'BD').toUpperCase(),
-        cgi_extend: cgi_extend, drm_info: drm_info,
-        midasbuyArea: payInfo.midasbuyArea || sd.midasbuyArea || '',
-        shopcode: shopInfo.shopcode || '', buyType: buyType, midas_sdk: '1',
-        currency_type: payInfo.currency_type || sd.currency_type || 'USD',
-        _id: Math.random(), sc: '', from: '', task_token: '', cgi_extend_obj: cgi_extend_obj
-      };
-      var actualPayload = JSON.parse(payloadJson);
-      var fullPayload = Object.assign({}, publicParams, actualPayload);
-      for (var k in fullPayload) { if (fullPayload[k] !== undefined && typeof fullPayload[k] !== 'object') fullPayload[k] = String(fullPayload[k]); }
-      var fullJson = JSON.stringify(fullPayload);
-
-      try { window.xMidas(); } catch(e) {}
-      var hexResult = window.xMidas({d: fullJson});
-      if (!hexResult || typeof hexResult !== 'string' || hexResult.length === 0) { out({error:'xmidas_empty'}); return; }
-      var bytes = (hexResult.match(/../g) || []).map(function(h){ return parseInt(h,16); });
-      var bin = ''; for (var i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
-      var encrypt_msg = btoa(bin);
-
-      var resp = await fetch('https://www.midasbuy.com' + endpoint, {
-        method: method,
-        headers: {'Content-Type':'application/json','Accept':'application/json, text/plain, */*'},
-        body: JSON.stringify({encrypt_msg: encrypt_msg, ctoken_ver: ctoken_ver, ctoken: ctoken}),
-        credentials: 'include'
-      });
-      var text = await resp.text();
-      var data; try { data = JSON.parse(text); } catch(e) { out({error:'invalid_json', status: resp.status, text: text.substring(0,300)}); return; }
-      out({ok:true, status: resp.status, data: data, encrypt_msg_len: encrypt_msg.length,
-        debug:{mainWorld:true, serverData:!!window.SERVER_DATA, device_id_len: device_id.length,
-               muid_len: muid.length, tdrc_fp_len: tdrc_fp.length, zoneid: publicParams.zoneid,
-               country: publicParams.country, shopcode: publicParams.shopcode, midasbuyArea: publicParams.midasbuyArea}});
-    } catch(e) { out({error:'js_exception', detail: String(e)}); }
-  })();
-})();
-"""
-
 _JS_ENCRYPT_ONLY = """
 async ({payloadJson}) => {
     try {
@@ -483,179 +362,6 @@ async ({payloadJson}) => {
 }
 """
 
-# ── Redeem COMMIT (window.midas.buyGoods) ───────────────────────────────────────
-#
-# PROVISIONAL — needs validation against live traffic. From the bundle trace:
-#   commit = window.midas.buyGoods(em, {onMessage})
-#   buyGoods -> _getPayUrl(em,'v3') (requires appid,pf,openid,currency_type,
-#               productid) -> _processUrl form-POSTs `em` into an iframe target
-#               (redeemCodeChannelIframe); the iframe submits the real order and
-#               reports back via postMessage (a key=value&... querystring).
-#
-# There is NO standalone JSON commit endpoint. We assemble `em` in-page from
-# window.SERVER_DATA.payInfo + the successful QueryRedeemCodeInfo response
-# (offer productid / shop_id) + the #xMidasToken DOM inputs, create a hidden
-# iframe target, drive buyGoods, and capture every postMessage. FLEXIBLE_RISK_
-# CONTROL is handled via window.midas.newRiskControl(source) -> POST
-# /h5/overseah5/v1/secondary_order. The Python side ALSO records the network
-# request/response so a live run yields the ground-truth order payload even if
-# this assembly is incomplete.
-_JS_COMMIT_REDEEM = """
-async ({redeemCode, roleId, redeemInfoJson, timeoutMs}) => {
-    const log = [];
-    const messages = [];
-    try {
-        // tokens + xMidas must be ready
-        let w = 0;
-        while ((typeof window.midas === 'undefined' || typeof window.midas.buyGoods !== 'function') && w < 150) {
-            await new Promise(r => setTimeout(r, 100)); w++;
-        }
-        if (!window.midas || typeof window.midas.buyGoods !== 'function')
-            return {error: 'no_buyGoods', midasType: typeof window.midas};
-
-        const sd       = window.SERVER_DATA || {};
-        const payInfo  = sd.payInfo  || {};
-        const shopInfo = sd.shopInfo || {};
-        let redeemInfo = {};
-        try { redeemInfo = JSON.parse(redeemInfoJson || '{}'); } catch(e) {}
-
-        // Offer fields come from the successful QueryRedeemCodeInfo response.
-        // Field names are best-guess until we capture a real success payload —
-        // we log the whole thing so the shape can be confirmed.
-        const rinfo    = redeemInfo.redeem_code_info || redeemInfo.redeemCodeInfo || redeemInfo;
-        const products = rinfo.products || rinfo.product_list || [];
-        const product  = products[0] || rinfo.product || {};
-        const productid = product.productid || product.product_id || product.offer_id
-                        || rinfo.productid || rinfo.product_id || '';
-
-        const tokenEl   = document.getElementById('xMidasToken');
-        const versionEl = document.getElementById('xMidasVersion');
-
-        // Hidden iframe target that _processUrl will POST the order into.
-        let iframe = document.getElementById('redeemCodeChannelIframe');
-        if (!iframe) {
-            iframe = document.createElement('iframe');
-            iframe.id = 'redeemCodeChannelIframe';
-            iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;border:0;';
-            document.body.appendChild(iframe);
-        }
-
-        const returnUrl = location.origin + location.pathname;
-        const em = {
-            appid:         payInfo.appid || '1450015065',
-            pf:            payInfo.pf || 'mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas',
-            pfkey:         payInfo.pfkey || 'pfKey',
-            openid:        payInfo.openid || roleId || '',
-            zoneid:        String(payInfo.zoneid || payInfo.zone_id || '1'),
-            country:       (payInfo.country || sd.country || 'BD').toUpperCase(),
-            currency_type: product.currency_type || payInfo.currency_type || 'USD',
-            shop_id:       shopInfo.shop_id || shopInfo.shopId || rinfo.shop_id || payInfo.shop_id || '',
-            productid:     String(productid),
-            num:           String(product.num || 1),
-            quantity:      1,
-            version:       'midasbuy_v2',
-            // ← the 18-char redeem code (merged onto em via arg-3 in the real flow)
-            redeem_code:   redeemCode,
-            channel:       'midasbuy_redeem',
-            subchannel:    'midasbuy_redeem',
-            id:            'MIDASBUY_REDEEM',
-            buyTypeKey:    'REDEEM',
-            buy_type_key:  'REDEEM',
-            successUrl:    returnUrl + '/success?isFromJsx=true&buy_type_key=REDEEM',
-            pendingUrl:    returnUrl,
-            failUrl:       returnUrl,
-            useIFrame:     '1',
-            usePost:       '1',
-            newtab:        '0',
-            ctoken:        tokenEl ? tokenEl.value : '',
-            ctoken_ver:    (versionEl && versionEl.value) ? versionEl.value : '1.0.1',
-            target:        iframe.contentWindow,
-        };
-        log.push('em assembled productid=' + em.productid + ' shop_id=' + em.shop_id + ' openid=' + em.openid);
-
-        const finished = {done: false, result: null};
-        const onMsg = (e) => {
-            try {
-                let raw = e;
-                if (typeof e === 'string') {
-                    const o = {}; e.split('&').forEach(kv => {
-                        const i = kv.indexOf('='); if (i>0) o[decodeURIComponent(kv.slice(0,i))] = decodeURIComponent(kv.slice(i+1));
-                    }); raw = o;
-                }
-                messages.push(raw);
-                const status = raw.status || raw.orderStatus || raw.orderInfo?.status;
-                if (status === 'success' || raw.orderInfo?.status === 'Created') {
-                    finished.done = true; finished.result = {outcome: 'success', data: raw};
-                } else if (status === 'error') {
-                    finished.done = true; finished.result = {outcome: 'error', data: raw};
-                }
-            } catch(err) { log.push('onMsg err ' + err); }
-        };
-
-        // Capture iframe -> parent postMessages too (the real result channel).
-        window.addEventListener('message', (ev) => {
-            try { if (ev && ev.data !== undefined) onMsg(ev.data); } catch(e) {}
-        }, false);
-
-        try {
-            window.midas.buyGoods(em, {onMessage: onMsg});
-            log.push('buyGoods invoked');
-        } catch(err) {
-            return {error: 'buyGoods_threw', detail: String(err), log};
-        }
-
-        const deadline = Date.now() + (timeoutMs || 25000);
-        while (!finished.done && Date.now() < deadline) {
-            await new Promise(r => setTimeout(r, 200));
-
-            // Risk-control branch: a message carrying FLEXIBLE_RISK_CONTROL.
-            const rc = messages.find(m => {
-                const d = (() => { try { return typeof m.data === 'string' ? JSON.parse(m.data) : (m.data || m); } catch(e) { return m; } })();
-                return d && (d.name === 'FLEXIBLE_RISK_CONTROL' || String(d.err_code||'').startsWith('FLEXIBLE_RISK_CONTROL'));
-            });
-            if (rc && typeof window.midas.newRiskControl === 'function') {
-                try {
-                    const d = (() => { try { return typeof rc.data === 'string' ? JSON.parse(rc.data) : (rc.data || rc); } catch(e) { return rc; } })();
-                    const source = d.details?.[0]?.source || d.source;
-                    log.push('risk-control challenge source=' + source);
-                    const tok = await window.midas.newRiskControl(source);
-                    log.push('newRiskControl -> rc_uuid=' + (tok && tok.rc_uuid));
-                    if (tok && tok.rc_token && tok.rc_uuid) {
-                        const resp = await fetch(location.origin + '/h5/overseah5/v1/secondary_order', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({rc_token: tok.rc_token, rc_uuid: tok.rc_uuid, channel: 'MIDASBUY_REDEEM'}),
-                            credentials: 'include',
-                        });
-                        const sj = await resp.json().catch(() => ({}));
-                        log.push('secondary_order status=' + resp.status);
-                        if (sj?.orderInfo?.status === 'Created') {
-                            finished.done = true; finished.result = {outcome: 'success', data: sj, viaRiskControl: true};
-                        } else {
-                            finished.done = true; finished.result = {outcome: 'risk_control', data: sj, viaRiskControl: true};
-                        }
-                    } else {
-                        finished.done = true; finished.result = {outcome: 'risk_control', data: {note: 'newRiskControl returned no token'}};
-                    }
-                } catch(err) { log.push('risk-control handling err ' + err); }
-            }
-        }
-
-        return {
-            ok: true,
-            finished: finished.done,
-            result: finished.result,
-            messages,
-            em_debug: Object.assign({}, em, {target: undefined}),
-            redeem_info_seen: redeemInfo,
-            log,
-        };
-    } catch(e) {
-        return {error: 'js_exception', detail: String(e), stack: (e.stack||'').slice(0,500), log};
-    }
-}
-"""
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -719,143 +425,6 @@ def _setup_lightweight_routes(page) -> None:
     logger.info("[CRYPTO] lightweight resource route registered")
 
 
-# ── Human-behaviour simulation (anti risk-control) ──────────────────────────────
-
-def _simulate_human_activity(page, *, moves: int = 10, scrolls: int = 3, keys: bool = True) -> None:
-    """
-    Generate genuine pointer/scroll/key events so tdrc.js records non-empty
-    behavioral telemetry.
-
-    tdrc.js samples mousemove on a ~200ms throttle, so moves are spaced >200ms
-    apart to register as distinct coordinates. Mouse *movement alone* satisfies
-    tdrc's msgIsValid gate; we deliberately avoid synthetic clicks because a
-    click at an arbitrary coordinate could hit a link and navigate the cached
-    page away, breaking the warmed session. Tab/Shift+Tab give safe key counts.
-    """
-    import random
-
-    vw, vh = 1440, 900
-    step_every = max(1, moves // max(1, scrolls))
-    try:
-        for i in range(moves):
-            nx = random.randint(60, vw - 60)
-            ny = random.randint(90, vh - 120)
-            page.mouse.move(nx, ny, steps=random.randint(4, 10))
-            page.wait_for_timeout(random.randint(230, 430))
-            if scrolls and i % step_every == 0:
-                page.mouse.wheel(0, random.randint(120, 420))
-                page.wait_for_timeout(random.randint(180, 320))
-        if keys:
-            for _ in range(random.randint(2, 4)):
-                page.keyboard.press("Tab")
-                page.wait_for_timeout(random.randint(90, 180))
-            page.keyboard.press("Shift+Tab")
-    except Exception as exc:
-        logger.debug("[CRYPTO] human activity simulation skipped: %s", exc)
-
-
-def _ensure_redeem_behavior(session: "_CachedBrowserSession") -> None:
-    """
-    Seed human behavior + dwell before a value-transfer call, so at least one
-    populated /cgi-bin/fp-behv heartbeat reaches the risk backend first. Re-warms
-    only if the session has gone cold (older than _BEHAVIOR_REWARM_S) to keep
-    repeat redeems on a warmed session fast.
-    """
-    now = time.time()
-    if session.behavior_warmed_at and (now - session.behavior_warmed_at) < _BEHAVIOR_REWARM_S:
-        logger.debug("[CRYPTO] behavior still warm — skipping re-seed")
-        return
-
-    logger.info("[CRYPTO] seeding human behavior before value-transfer call")
-    _simulate_human_activity(session.page, moves=12, scrolls=4, keys=True)
-    try:
-        # dwell so a populated behavioral heartbeat fires before we redeem
-        session.page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
-    except Exception:
-        pass
-    session.behavior_warmed_at = time.time()
-    logger.info("[CRYPTO] behavior seeding complete (dwell=%dms)", _BEHAVIOR_HEARTBEAT_MS)
-    _log_risk_probe(session.page)
-
-
-def _wait_for_full_sdk_and_telemetry(page) -> None:
-    """
-    Full-context warm-up: wait for the complete Midas SDK (window.midas) and give
-    tdrc.js time to run its full reporting suite (device FP -> /risk_control/report,
-    third-party vendors -> /risk_control/session, behavioral -> /cgi-bin/fp-behv).
-    Interleave genuine activity so the behavioral channel is non-empty too.
-    """
-    try:
-        page.wait_for_function(
-            "() => typeof window.midas !== 'undefined' && typeof window.midas.buyGoods === 'function'",
-            timeout=20_000,
-        )
-        logger.info("[CRYPTO] window.midas (full SDK) ready")
-    except Exception:
-        logger.warning("[CRYPTO] window.midas not detected — page may be partially booted")
-
-    # Activity + settle so the full tdrc suite reports before any redeem.
-    _simulate_human_activity(page, moves=8, scrolls=2, keys=True)
-    try:
-        page.wait_for_timeout(_FULL_CONTEXT_SETTLE_MS)
-    except Exception:
-        pass
-
-
-def _install_risk_telemetry_log(page) -> None:
-    """
-    Log requests to risk/anti-fraud telemetry endpoints. If nothing appears,
-    tdrc.js is NOT reporting behavior (so warming can't possibly help and the
-    real lever is the browser fingerprint / headful mode).
-    """
-    def on_request(req):
-        try:
-            u = req.url.lower()
-            if any(h in u for h in _RISK_TELEMETRY_HINTS):
-                logger.info("[RISK-TELEMETRY] %s %s", req.method, req.url[:160])
-        except Exception:
-            pass
-
-    page.on("request", on_request)
-
-
-_JS_RISK_PROBE = """
-() => {
-    const fonts = (() => { try { return document.fonts ? document.fonts.size : -1; } catch(e){ return -2; } })();
-    let webglVendor = '', webglRenderer = '';
-    try {
-        const gl = document.createElement('canvas').getContext('webgl');
-        const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
-        if (dbg) { webglVendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
-                   webglRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
-    } catch(e) {}
-    return {
-        webdriver:    navigator.webdriver,
-        hasXT:        !!window._XT,                 // tdrc.js config present?
-        xtLen:        (window._XT && window._XT.length) || 0,
-        hasMidas:     typeof window.midas,
-        hasNewRC:     typeof (window.midas && window.midas.newRiskControl),
-        hasChaosVM:   typeof window.xMidas,
-        uuidCookie:   /UUID=/.test(document.cookie),
-        plugins:      navigator.plugins.length,
-        fonts,
-        webglVendor, webglRenderer,
-        hardwareConcurrency: navigator.hardwareConcurrency,
-        ua:           navigator.userAgent.slice(0, 80),
-    };
-}
-"""
-
-
-def _log_risk_probe(page) -> None:
-    """One-shot snapshot of the signals risk-control scores. Send these to debug."""
-    try:
-        diag = page.evaluate(_JS_RISK_PROBE)
-        logger.info("[RISK-PROBE] %s", json.dumps(diag, default=str))
-    except Exception as exc:
-        logger.warning("[RISK-PROBE] failed: %s", exc)
-
-
 def _load_session_storage(storage_state_path: str) -> dict:
     ss_path = os.path.join(os.path.dirname(storage_state_path), "session_storage.json")
     if not os.path.exists(ss_path):
@@ -874,7 +443,7 @@ def _launch_context(p, storage_state_path: str):
     ss_data = _load_session_storage(storage_state_path)
 
     browser = p.chromium.launch(
-        headless=_HEADLESS,
+        headless=True,
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -892,8 +461,6 @@ def _launch_context(p, storage_state_path: str):
         ),
         locale="en-US",
         timezone_id="America/New_York",
-        # Allow our main-world bridge <script> to execute despite the page CSP.
-        bypass_csp=True,
     )
 
     context.add_init_script(_STEALTH_JS)
@@ -987,36 +554,15 @@ def _create_cached_session(
         browser, context = _launch_context(p, storage_state_path)
         page = context.new_page()
 
-        # Full-context mode: do NOT block resources, so the complete app
-        # (window.midas) + the full tdrc.js reporting suite (device FP via
-        # /risk_control/report + third-party vendors + behavioral fp-behv) can
-        # run and establish a trusted session before any value-transfer call.
-        # The stripped/lightweight page only emitted fp-behv, leaving the risk
-        # backend with an incomplete profile -> forced graphic captcha.
-        if not _FULL_CONTEXT:
-            _setup_lightweight_routes(page)
+        _setup_lightweight_routes(page)
         _setup_chaos_vm_protection(page)
-        _install_risk_telemetry_log(page)
 
-        wait_state = "load" if _FULL_CONTEXT else "domcontentloaded"
-        logger.info(
-            "[CRYPTO] warming cached page %s (headless=%s full_context=%s)",
-            redeem_url, _HEADLESS, _FULL_CONTEXT,
-        )
-        page.goto(redeem_url, wait_until=wait_state, timeout=timeout_ms)
+        logger.info("[CRYPTO] warming cached page %s", redeem_url)
+        page.goto(redeem_url, wait_until="domcontentloaded", timeout=timeout_ms)
         logger.info("[CRYPTO] cached page ready url=%s", page.url)
 
         if not _wait_for_xmidas(page, session_dir, timeout_ms):
             raise RuntimeError("xMidas did not become ready")
-
-        if _FULL_CONTEXT:
-            # Wait for the full SDK + let tdrc's full reporting suite complete.
-            _wait_for_full_sdk_and_telemetry(page)
-        else:
-            # Light initial seeding so the session is never stone-cold.
-            _simulate_human_activity(page, moves=4, scrolls=1, keys=False)
-
-        _log_risk_probe(page)
 
         now = time.time()
         return _CachedBrowserSession(
@@ -1181,61 +727,6 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
     return result.get("data")
 
 
-def _evaluate_in_main_world(page, payload: dict, endpoint: str, method: str, timeout_ms: int) -> Optional[dict]:
-    """
-    Run the encrypt+fetch in the page MAIN world (via an injected <script>) so the
-    request carries the REAL device_id/muid/SERVER_DATA, then poll a DOM element
-    for the JSON result. Returns the same {ok/status/data/...} shape as _JS_CALL_API.
-    """
-    from playwright.sync_api import TimeoutError as PWTimeout
-    try:
-        from patchright.sync_api import TimeoutError as PWTimeout  # noqa: F811
-    except ImportError:
-        pass
-
-    nonce = os.urandom(8).hex()
-    payload_json = json.dumps(payload, separators=(",", ":"))
-
-    page.evaluate(
-        """(a) => {
-            const inEl = document.createElement('div');
-            inEl.id = '__mds_in_' + a.nonce; inEl.style.display = 'none';
-            inEl.textContent = JSON.stringify({payloadJson: a.payloadJson, endpoint: a.endpoint, method: a.method});
-            document.documentElement.appendChild(inEl);
-            const outEl = document.createElement('div');
-            outEl.id = '__mds_out_' + a.nonce; outEl.style.display = 'none';
-            document.documentElement.appendChild(outEl);
-            const s = document.createElement('script');
-            s.setAttribute('data-nonce', a.nonce);
-            s.textContent = a.code;
-            document.documentElement.appendChild(s);
-        }""",
-        {"nonce": nonce, "payloadJson": payload_json, "endpoint": endpoint,
-         "method": method, "code": _JS_MAINWORLD_BRIDGE},
-    )
-
-    try:
-        page.wait_for_function(
-            "(nonce) => { const el = document.getElementById('__mds_out_' + nonce); return !!(el && el.textContent); }",
-            arg=nonce,
-            timeout=timeout_ms,
-        )
-    except PWTimeout:
-        logger.warning("[CRYPTO] main-world bridge produced no result within %dms", timeout_ms)
-        return None
-
-    raw = page.evaluate("(nonce) => document.getElementById('__mds_out_' + nonce).textContent", nonce)
-    try:
-        result = json.loads(raw) if raw else None
-    except Exception:
-        logger.warning("[CRYPTO] main-world bridge returned non-JSON")
-        return None
-
-    if isinstance(result, dict) and result.get("debug"):
-        logger.info("[CRYPTO] main-world request debug=%s", json.dumps(result["debug"]))
-    return result
-
-
 def _call_api_in_cached_browser(
     payload: dict,
     endpoint: str,
@@ -1255,28 +746,12 @@ def _call_api_in_cached_browser(
 
         with session.lock:
             try:
-                is_redeem = endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS
-                if is_redeem:
-                    _ensure_redeem_behavior(session)
-                    # Always emit a fingerprint snapshot on a redeem (even when the
-                    # session was already warm) so diagnostics are never missing.
-                    _log_risk_probe(session.page)
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
-
-                result = None
-                if is_redeem:
-                    # Value-transfer endpoints MUST carry the real device_id/muid,
-                    # so build+send the request in the page MAIN world.
-                    logger.info("[CRYPTO] using main-world bridge for %s", endpoint)
-                    result = _evaluate_in_main_world(
-                        session.page, payload, endpoint, method, min(timeout_ms, 40_000),
-                    )
-                if result is None:
-                    result = session.page.evaluate(_JS_CALL_API, {
-                        "payloadJson": payload_json,
-                        "endpoint":    endpoint,
-                        "method":      method,
-                    })
+                result = session.page.evaluate(_JS_CALL_API, {
+                    "payloadJson": payload_json,
+                    "endpoint":    endpoint,
+                    "method":      method,
+                })
                 session.last_used = time.time()
             except Exception:
                 logger.exception("[CRYPTO] cached page evaluate failed")
@@ -1354,16 +829,6 @@ def call_api_in_browser(
                 browser.close()
                 return None
 
-            if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
-                if _FULL_CONTEXT:
-                    _wait_for_full_sdk_and_telemetry(page)
-                _simulate_human_activity(page, moves=12, scrolls=4, keys=True)
-                try:
-                    page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
-                except Exception:
-                    pass
-                _log_risk_probe(page)
-
             payload_json = json.dumps(payload, separators=(",", ":"))
             logger.info("[CRYPTO] calling in-browser fetch  endpoint=%s", endpoint)
 
@@ -1381,134 +846,6 @@ def call_api_in_browser(
     except Exception:
         logger.exception("[CRYPTO] call_api_in_browser crashed")
         return None
-
-
-# ── Redeem COMMIT driver ────────────────────────────────────────────────────────
-
-_COMMIT_CAPTURE_HINTS = ("order", "secondary", "/pay", "provide", "shelfproto", "trade")
-
-
-def _install_order_capture(page, sink: list) -> None:
-    """
-    Log every request/response that looks like order/payment traffic so a live
-    redeem yields the ground-truth commit endpoint + payload even if our in-page
-    `em` assembly is incomplete. This is the mechanism that lets us finalize the
-    commit against real data.
-    """
-    def _interesting(url: str) -> bool:
-        u = url.lower()
-        return any(h in u for h in _COMMIT_CAPTURE_HINTS)
-
-    def on_request(req):
-        try:
-            if _interesting(req.url):
-                entry = {"kind": "request", "method": req.method, "url": req.url}
-                try:
-                    entry["post_data"] = req.post_data
-                except Exception:
-                    entry["post_data"] = None
-                sink.append(entry)
-                logger.info("[COMMIT] >> %s %s", req.method, req.url)
-                if entry.get("post_data"):
-                    logger.info("[COMMIT]    payload=%s", str(entry["post_data"])[:1500])
-        except Exception:
-            pass
-
-    def on_response(resp):
-        try:
-            if _interesting(resp.url):
-                body = None
-                try:
-                    body = resp.text()
-                except Exception:
-                    body = None
-                sink.append({"kind": "response", "status": resp.status, "url": resp.url, "body": body})
-                logger.info("[COMMIT] << %s %s", resp.status, resp.url)
-                if body:
-                    logger.info("[COMMIT]    response=%s", str(body)[:1500])
-        except Exception:
-            pass
-
-    page.on("request", on_request)
-    page.on("response", on_response)
-
-
-def commit_redeem_in_browser(
-    redeem_info: dict,
-    redeem_code: str,
-    role_id: str,
-    storage_state_path: str,
-    country_code: str = "bd",
-    timeout_ms: int = 60_000,
-) -> Optional[dict]:
-    """
-    Drive window.midas.buyGoods for the redeem commit on a dedicated page (kept
-    separate from the cached API page so its DOM state is not disturbed).
-
-    PROVISIONAL: the order bag assembly is best-effort until validated against a
-    real successful QueryRedeemCodeInfo + order capture. The returned dict always
-    includes `network` (captured order/payment traffic) so the live request can
-    be inspected and the commit finalized.
-    """
-    sync_playwright, PWTimeout = _get_playwright()
-
-    redeem_url  = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
-    session_dir = os.path.dirname(storage_state_path)
-    network: list = []
-
-    try:
-        with sync_playwright() as p:
-            browser, context = _launch_context(p, storage_state_path)
-            page = context.new_page()
-
-            _setup_chaos_vm_protection(page)
-            _install_order_capture(page, network)
-
-            logger.info("[COMMIT] navigating to %s", redeem_url)
-            try:
-                page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
-            except PWTimeout:
-                logger.error("[COMMIT] page.goto timed out")
-                _save_debug(page, session_dir, "commit_timeout")
-                browser.close()
-                return {"ok": False, "error": "goto_timeout", "network": network}
-
-            if not _wait_for_xmidas(page, session_dir, timeout_ms):
-                browser.close()
-                return {"ok": False, "error": "no_xmidas", "network": network}
-
-            # Behaviour first so the commit is not flagged by risk-control.
-            _simulate_human_activity(page, moves=12, scrolls=4, keys=True)
-            try:
-                page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
-            except Exception:
-                pass
-
-            logger.info("[COMMIT] driving buyGoods for code=***%s", redeem_code[-4:] if redeem_code else "")
-            result = page.evaluate(_JS_COMMIT_REDEEM, {
-                "redeemCode":     redeem_code,
-                "roleId":         role_id,
-                "redeemInfoJson": json.dumps(redeem_info or {}),
-                "timeoutMs":      min(timeout_ms, 30_000),
-            })
-
-            _save_debug(page, session_dir, "commit_done")
-            browser.close()
-
-            if not isinstance(result, dict):
-                result = {"ok": False, "error": "no_result"}
-            result["network"] = network
-            logger.info(
-                "[COMMIT] result finished=%s outcome=%s captured=%d",
-                result.get("finished"),
-                (result.get("result") or {}).get("outcome"),
-                len(network),
-            )
-            return result
-
-    except Exception:
-        logger.exception("[COMMIT] commit_redeem_in_browser crashed")
-        return {"ok": False, "error": "exception", "network": network}
 
 
 def get_browser_payload(

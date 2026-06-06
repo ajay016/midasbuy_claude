@@ -2,14 +2,6 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load the project .env so MIDASBUY_* tunables (e.g. MIDASBUY_HEADFUL) reach
-# os.getenv(). Without this, vars in .env are never read by the process.
-try:
-    from dotenv import load_dotenv
-    load_dotenv(BASE_DIR / ".env")
-except Exception:
-    pass
-
 SECRET_KEY = "django-insecure-change-this-in-production-use-env-var"
 
 DEBUG = True
