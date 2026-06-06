@@ -882,24 +882,89 @@ _SLIDER_SELECTORS = (
 _SOLVER_HEADLESS = os.getenv("MIDASBUY_SOLVER_HEADLESS", "").lower() in ("1", "true", "yes", "on")
 
 
-def _install_net_capture(page, sink: list) -> None:
-    hints = ("order", "secondary", "redeem", "shelfproto", "risk", "harvestsharp", "captcha")
+def _install_net_capture(page, sink: list, session_dir: Optional[str] = None) -> None:
+    """
+    Dump EVERY request URL (scripts, images, xhr) to captcha_network.txt and log
+    request/response bodies for the captcha config + verify calls — so we get the
+    real puzzle image URLs and the verify token format automatically, without
+    hand-copying from DevTools.
+    """
+    body_hints = ("captcha", "tcaptcha", "cap_union", "harvestsharp", "slider",
+                  "risk", "shelfproto", "redeem", "secondary", "order", "verify", "show")
+    dump_path = os.path.join(session_dir, "captcha_network.txt") if session_dir else None
+
+    def _append(line: str):
+        if not dump_path:
+            return
+        try:
+            with open(dump_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def on_request(req):
+        try:
+            _append(f">> {req.resource_type:9} {req.method:5} {req.url}")
+            u = req.url.lower()
+            if any(h in u for h in body_hints):
+                try:
+                    pd = req.post_data
+                except Exception:
+                    pd = None
+                if pd:
+                    _append(f"   POST_DATA: {pd[:2000]}")
+        except Exception:
+            pass
+
     def on_resp(resp):
         try:
             u = resp.url.lower()
-            if any(h in u for h in hints):
+            if any(h in u for h in body_hints):
                 body = None
                 try:
                     body = resp.text()
                 except Exception:
                     body = None
-                sink.append({"status": resp.status, "url": resp.url, "body": (body or "")[:1500]})
+                sink.append({"status": resp.status, "url": resp.url, "body": (body or "")[:2000]})
                 logger.info("[CAPTCHA] net << %s %s", resp.status, resp.url[:140])
+                _append(f"<< {resp.status} {resp.url}")
                 if body:
-                    logger.info("[CAPTCHA] net body=%s", (body or "")[:600])
+                    _append(f"   RESP: {body[:2000]}")
+                    logger.info("[CAPTCHA] net body=%s", (body or "")[:400])
         except Exception:
             pass
+
+    page.on("request", on_request)
     page.on("response", on_resp)
+
+
+def _keep_open_if_requested(page, session_dir: str) -> None:
+    """
+    If MIDASBUY_CAPTCHA_KEEP_OPEN is set, leave the headful browser open so the
+    user can inspect DevTools / grab JS + network links. Closes early when a
+    `close_captcha.txt` sentinel appears in the session dir, else after a cap.
+    """
+    if os.getenv("MIDASBUY_CAPTCHA_KEEP_OPEN", "").lower() not in ("1", "true", "yes", "on"):
+        return
+    sentinel = os.path.join(session_dir, "close_captcha.txt")
+    max_s = int(os.getenv("MIDASBUY_CAPTCHA_KEEP_OPEN_S", "900"))
+    logger.warning(
+        "[CAPTCHA] keeping browser open up to %ds. Network dump: %s/captcha_network.txt. "
+        "Create %s to close early.", max_s, session_dir, sentinel,
+    )
+    waited = 0
+    while waited < max_s:
+        if os.path.exists(sentinel):
+            try:
+                os.remove(sentinel)
+            except Exception:
+                pass
+            break
+        try:
+            page.wait_for_timeout(1000)
+        except Exception:
+            time.sleep(1)
+        waited += 1
 
 
 def _find_slider_container(page) -> Optional[str]:
@@ -943,7 +1008,7 @@ def solve_redeem_captcha_and_retry(
             )
             page = context.new_page()
             _setup_chaos_vm_protection(page)
-            _install_net_capture(page, network)
+            _install_net_capture(page, network, session_dir)
 
             logger.info("[CAPTCHA] opening redeem page (headless=%s) for captcha solve", _SOLVER_HEADLESS)
             try:
@@ -1037,6 +1102,7 @@ def solve_redeem_captcha_and_retry(
 
             if not token:
                 logger.error("[CAPTCHA] no token obtained (attempts=%d)", attempts)
+                _keep_open_if_requested(page, session_dir)
                 browser.close()
                 return {"ok": False, "error": "captcha_unsolved", "attempts": attempts, "network": network}
 
@@ -1054,6 +1120,7 @@ def solve_redeem_captcha_and_retry(
                 "method":      "POST",
             })
             _save_debug(page, session_dir, "captcha_retry_done")
+            _keep_open_if_requested(page, session_dir)
             browser.close()
 
             data = (retry or {}).get("data") if isinstance(retry, dict) else None
