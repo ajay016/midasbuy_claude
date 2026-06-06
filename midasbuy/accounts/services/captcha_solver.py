@@ -158,6 +158,7 @@ def solve_slider_in_container(
     container_selector: str,
     session_dir: Optional[str] = None,
     scale_hint: float = 1.0,
+    attempt: int = 1,
 ) -> bool:
     """
     Screenshot the slider container, detect the gap, and drag the handle.
@@ -178,7 +179,7 @@ def solve_slider_in_container(
             return False
 
         png = el.screenshot()
-        debug_path = os.path.join(session_dir, "captcha_slider.png") if session_dir else None
+        debug_path = os.path.join(session_dir, f"captcha_slider_{attempt}.png") if session_dir else None
         gap_x = detect_gap_offset(png, save_debug_path=debug_path)
         if gap_x is None:
             return False

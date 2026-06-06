@@ -25,6 +25,7 @@ Note: forterToken / feh-- localStorage keys are NOT read by the Chaos VM
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from threading import Lock, get_ident
@@ -983,13 +984,18 @@ def solve_redeem_captcha_and_retry(
             token = None
             deadline = time.time() + timeout_ms / 1000.0
             attempts = 0
-            while time.time() < deadline:
+            max_attempts = int(os.getenv("MIDASBUY_CAPTCHA_MAX_ATTEMPTS", "2"))
+
+            def _poll_token():
                 out = page.evaluate(
                     "(n) => { const el = document.getElementById('__rc_out_' + n); return el && el.textContent ? el.textContent : null; }",
                     nonce,
                 )
-                if out:
-                    res = json.loads(out)
+                return json.loads(out) if out else None
+
+            while time.time() < deadline:
+                res = _poll_token()
+                if res:
                     if res.get("ok"):
                         token = res.get("tok")
                         logger.info("[CAPTCHA] newRiskControl resolved: %s", json.dumps(token))
@@ -999,13 +1005,33 @@ def solve_redeem_captcha_and_retry(
                         break
 
                 sel = _find_slider_container(page)
-                if sel and attempts < 6:
-                    attempts += 1
-                    logger.info("[CAPTCHA] slider visible (%s), solve attempt %d", sel, attempts)
-                    captcha_solver.solve_slider_in_container(page, sel, session_dir)
-                    page.wait_for_timeout(1500)
-                else:
+                if not sel:
                     page.wait_for_timeout(500)
+                    continue
+                if attempts >= max_attempts:
+                    # Don't keep dragging — that's what triggers "Operation too
+                    # often". Just wait for the pending verify to resolve.
+                    page.wait_for_timeout(1000)
+                    continue
+
+                attempts += 1
+                # Human settle before grabbing the handle (instant drags look botty
+                # and rapid retries get rate-limited).
+                page.wait_for_timeout(random.randint(1300, 2600))
+                logger.info("[CAPTCHA] slider visible (%s), solve attempt %d/%d", sel, attempts, max_attempts)
+                captcha_solver.solve_slider_in_container(page, sel, session_dir, attempt=attempts)
+
+                # Wait for this attempt's verify result before trying again.
+                waited = 0
+                while waited < 9000 and time.time() < deadline:
+                    res = _poll_token()
+                    if res:
+                        break
+                    page.wait_for_timeout(500)
+                    waited += 500
+                if not token and attempts < max_attempts:
+                    # Back off well before the next attempt to avoid the frequency cap.
+                    page.wait_for_timeout(random.randint(4000, 6500))
 
             _save_debug(page, session_dir, "captcha_after_solve")
 
