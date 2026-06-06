@@ -159,9 +159,21 @@ async def get_player_info(
 
 # ── Redeem code info ──────────────────────────────────────────────────────────
 
+def _is_risk_control(data: dict) -> bool:
+    err_code = str(data.get("err_code") or "")
+    name = str((data.get("data") or {}).get("name") or "")
+    return err_code.startswith("FLEXIBLE_RISK_CONTROL") or name == "FLEXIBLE_RISK_CONTROL"
+
+
 def _redeem_query_error_message(data: dict) -> str:
     err_code = str(data.get("err_code") or "")
     msg = data.get("msg") or ""
+
+    if _is_risk_control(data):
+        return (
+            "Midasbuy flagged this request for risk-control verification (graphic captcha). "
+            "The session needs more trust — retry, or warm the session with real activity first."
+        )
 
     messages = {
         "REDEEM_CODE_ALREADY_USED": "Redeem code is already used. Please check the code.",

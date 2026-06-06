@@ -44,6 +44,7 @@ class _CachedBrowserSession:
     storage_mtime: float
     created_at: float
     last_used: float
+    behavior_warmed_at: float = 0.0
     lock: Lock = field(default_factory=Lock)
 
 
@@ -53,6 +54,22 @@ _CACHED_ENDPOINTS = {
     "/interface/getCharac",
     "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
 }
+
+# ── Behavioral warming (anti risk-control) ──────────────────────────────────────
+# Midasbuy's tdrc.js streams a behavioral heartbeat (mouse coords / click / key
+# counts) to /cgi-bin/fp-behv every ~10s, and SUPPRESSES the report entirely when
+# there was no real interaction (its msgIsValid check). A headless session that
+# loads the page then immediately fetch()es a value-transfer endpoint (redeem)
+# emits zero behavior, so the server scores it as a bot and returns
+# FLEXIBLE_RISK_CONTROL:graphic. Read-only getCharac is scored leniently and is
+# unaffected. Before a value-transfer call we therefore seed genuine pointer /
+# scroll / key activity and dwell long enough for at least one *populated*
+# heartbeat to fire. Tunable via env so it can be adjusted without code changes.
+_BEHAVIOR_REQUIRED_ENDPOINTS = {
+    "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
+}
+_BEHAVIOR_HEARTBEAT_MS = int(os.getenv("MIDASBUY_BEHAVIOR_HEARTBEAT_MS", "11000"))
+_BEHAVIOR_REWARM_S     = float(os.getenv("MIDASBUY_BEHAVIOR_REWARM_S", "240"))
 
 # Local copy of the Chaos VM CDN script (served via page.route to avoid CDN latency)
 _CHAOS_VM_LOCAL_PATH = os.path.normpath(
@@ -425,6 +442,64 @@ def _setup_lightweight_routes(page) -> None:
     logger.info("[CRYPTO] lightweight resource route registered")
 
 
+# ── Human-behaviour simulation (anti risk-control) ──────────────────────────────
+
+def _simulate_human_activity(page, *, moves: int = 10, scrolls: int = 3, keys: bool = True) -> None:
+    """
+    Generate genuine pointer/scroll/key events so tdrc.js records non-empty
+    behavioral telemetry.
+
+    tdrc.js samples mousemove on a ~200ms throttle, so moves are spaced >200ms
+    apart to register as distinct coordinates. Mouse *movement alone* satisfies
+    tdrc's msgIsValid gate; we deliberately avoid synthetic clicks because a
+    click at an arbitrary coordinate could hit a link and navigate the cached
+    page away, breaking the warmed session. Tab/Shift+Tab give safe key counts.
+    """
+    import random
+
+    vw, vh = 1440, 900
+    step_every = max(1, moves // max(1, scrolls))
+    try:
+        for i in range(moves):
+            nx = random.randint(60, vw - 60)
+            ny = random.randint(90, vh - 120)
+            page.mouse.move(nx, ny, steps=random.randint(4, 10))
+            page.wait_for_timeout(random.randint(230, 430))
+            if scrolls and i % step_every == 0:
+                page.mouse.wheel(0, random.randint(120, 420))
+                page.wait_for_timeout(random.randint(180, 320))
+        if keys:
+            for _ in range(random.randint(2, 4)):
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(random.randint(90, 180))
+            page.keyboard.press("Shift+Tab")
+    except Exception as exc:
+        logger.debug("[CRYPTO] human activity simulation skipped: %s", exc)
+
+
+def _ensure_redeem_behavior(session: "_CachedBrowserSession") -> None:
+    """
+    Seed human behavior + dwell before a value-transfer call, so at least one
+    populated /cgi-bin/fp-behv heartbeat reaches the risk backend first. Re-warms
+    only if the session has gone cold (older than _BEHAVIOR_REWARM_S) to keep
+    repeat redeems on a warmed session fast.
+    """
+    now = time.time()
+    if session.behavior_warmed_at and (now - session.behavior_warmed_at) < _BEHAVIOR_REWARM_S:
+        logger.debug("[CRYPTO] behavior still warm — skipping re-seed")
+        return
+
+    logger.info("[CRYPTO] seeding human behavior before value-transfer call")
+    _simulate_human_activity(session.page, moves=12, scrolls=4, keys=True)
+    try:
+        # dwell so a populated behavioral heartbeat fires before we redeem
+        session.page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
+    except Exception:
+        pass
+    session.behavior_warmed_at = time.time()
+    logger.info("[CRYPTO] behavior seeding complete (dwell=%dms)", _BEHAVIOR_HEARTBEAT_MS)
+
+
 def _load_session_storage(storage_state_path: str) -> dict:
     ss_path = os.path.join(os.path.dirname(storage_state_path), "session_storage.json")
     if not os.path.exists(ss_path):
@@ -563,6 +638,10 @@ def _create_cached_session(
 
         if not _wait_for_xmidas(page, session_dir, timeout_ms):
             raise RuntimeError("xMidas did not become ready")
+
+        # Light initial seeding so the session is never stone-cold (no long dwell
+        # here — read-only lookups stay fast; the full dwell is gated to redeems).
+        _simulate_human_activity(page, moves=4, scrolls=1, keys=False)
 
         now = time.time()
         return _CachedBrowserSession(
@@ -746,6 +825,8 @@ def _call_api_in_cached_browser(
 
         with session.lock:
             try:
+                if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
+                    _ensure_redeem_behavior(session)
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
                 result = session.page.evaluate(_JS_CALL_API, {
                     "payloadJson": payload_json,
@@ -828,6 +909,13 @@ def call_api_in_browser(
             if not _wait_for_xmidas(page, session_dir, timeout_ms):
                 browser.close()
                 return None
+
+            if endpoint.rstrip("/") in _BEHAVIOR_REQUIRED_ENDPOINTS:
+                _simulate_human_activity(page, moves=12, scrolls=4, keys=True)
+                try:
+                    page.wait_for_timeout(_BEHAVIOR_HEARTBEAT_MS)
+                except Exception:
+                    pass
 
             payload_json = json.dumps(payload, separators=(",", ":"))
             logger.info("[CRYPTO] calling in-browser fetch  endpoint=%s", endpoint)
