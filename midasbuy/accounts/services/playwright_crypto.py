@@ -439,11 +439,11 @@ def _load_session_storage(storage_state_path: str) -> dict:
         return {}
 
 
-def _launch_context(p, storage_state_path: str):
+def _launch_context(p, storage_state_path: str, headless: bool = True, bypass_csp: bool = False):
     ss_data = _load_session_storage(storage_state_path)
 
     browser = p.chromium.launch(
-        headless=True,
+        headless=headless,
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -461,6 +461,7 @@ def _launch_context(p, storage_state_path: str):
         ),
         locale="en-US",
         timezone_id="America/New_York",
+        bypass_csp=bypass_csp,
     )
 
     context.add_init_script(_STEALTH_JS)
@@ -846,6 +847,196 @@ def call_api_in_browser(
     except Exception:
         logger.exception("[CRYPTO] call_api_in_browser crashed")
         return None
+
+
+# ── Redeem CAPTCHA solve + retry (free TCaptcha slider solver) ──────────────────
+
+# Main-world script: invoke window.midas.newRiskControl(source) (renders the
+# TCaptcha slider and resolves with {rc_token, rc_uuid} once solved) and write
+# the result to a DOM element the driver can poll.
+_JS_TRIGGER_RISKCONTROL = r"""
+(function(){
+  var me = document.currentScript;
+  var nonce = me && me.getAttribute('data-nonce');
+  function out(o){ var el = document.getElementById('__rc_out_'+nonce); if (el) el.textContent = JSON.stringify(o); }
+  try {
+    var source = JSON.parse(document.getElementById('__rc_in_'+nonce).textContent).source;
+    if (!window.midas || typeof window.midas.newRiskControl !== 'function') { out({error:'no_newRiskControl', midas: typeof window.midas}); return; }
+    window.midas.newRiskControl(source).then(function(tok){ out({ok:true, tok: tok}); })
+      .catch(function(e){ out({error:'rc_rejected', detail: String(e)}); });
+  } catch(e) { out({error:'js_exception', detail: String(e)}); }
+})();
+"""
+
+_SLIDER_SELECTORS = (
+    "#riskControlComponent",
+    "iframe[src*='harvestsharp']",
+    "iframe[src*='slider']",
+    "#tcaptcha_iframe",
+    "iframe[src*='captcha']",
+)
+
+# Solver browser runs headful by default so the slider renders for solving and
+# can be watched/assisted; set MIDASBUY_SOLVER_HEADLESS=1 to force headless.
+_SOLVER_HEADLESS = os.getenv("MIDASBUY_SOLVER_HEADLESS", "").lower() in ("1", "true", "yes", "on")
+
+
+def _install_net_capture(page, sink: list) -> None:
+    hints = ("order", "secondary", "redeem", "shelfproto", "risk", "harvestsharp", "captcha")
+    def on_resp(resp):
+        try:
+            u = resp.url.lower()
+            if any(h in u for h in hints):
+                body = None
+                try:
+                    body = resp.text()
+                except Exception:
+                    body = None
+                sink.append({"status": resp.status, "url": resp.url, "body": (body or "")[:1500]})
+                logger.info("[CAPTCHA] net << %s %s", resp.status, resp.url[:140])
+                if body:
+                    logger.info("[CAPTCHA] net body=%s", (body or "")[:600])
+        except Exception:
+            pass
+    page.on("response", on_resp)
+
+
+def _find_slider_container(page) -> Optional[str]:
+    for sel in _SLIDER_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el:
+                box = el.bounding_box()
+                if box and box["width"] > 40 and box["height"] > 40:
+                    return sel
+        except Exception:
+            continue
+    return None
+
+
+def solve_redeem_captcha_and_retry(
+    payload: dict,
+    source: str,
+    storage_state_path: str,
+    country_code: str = "bd",
+    endpoint: str = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
+    timeout_ms: int = 90_000,
+) -> Optional[dict]:
+    """
+    Render the TCaptcha slider via newRiskControl, auto-solve it (free path), then
+    retry the redeem query carrying the captcha token. Runs on its own headful
+    page so lookups are untouched. Saves the slider screenshot + captures the
+    post-solve network so a real run yields ground truth for the retry contract.
+    """
+    from . import captcha_solver
+
+    sync_playwright, PWTimeout = _get_playwright()
+    redeem_url  = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
+    session_dir = os.path.dirname(storage_state_path)
+    network: list = []
+
+    try:
+        with sync_playwright() as p:
+            browser, context = _launch_context(
+                p, storage_state_path, headless=_SOLVER_HEADLESS, bypass_csp=True,
+            )
+            page = context.new_page()
+            _setup_chaos_vm_protection(page)
+            _install_net_capture(page, network)
+
+            logger.info("[CAPTCHA] opening redeem page (headless=%s) for captcha solve", _SOLVER_HEADLESS)
+            try:
+                page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
+            except PWTimeout:
+                browser.close()
+                return {"ok": False, "error": "goto_timeout", "network": network}
+
+            try:
+                page.wait_for_function(
+                    "() => typeof window.midas !== 'undefined' && typeof window.midas.newRiskControl === 'function'",
+                    timeout=30_000,
+                )
+            except Exception:
+                logger.error("[CAPTCHA] window.midas.newRiskControl not available")
+                _save_debug(page, session_dir, "captcha_no_sdk")
+                browser.close()
+                return {"ok": False, "error": "no_newRiskControl", "network": network}
+
+            nonce = os.urandom(8).hex()
+            page.evaluate(
+                """(a) => {
+                    const inEl = document.createElement('div');
+                    inEl.id = '__rc_in_' + a.nonce; inEl.style.display = 'none';
+                    inEl.textContent = JSON.stringify({source: a.source});
+                    document.documentElement.appendChild(inEl);
+                    const outEl = document.createElement('div');
+                    outEl.id = '__rc_out_' + a.nonce; outEl.style.display = 'none';
+                    document.documentElement.appendChild(outEl);
+                    const s = document.createElement('script');
+                    s.setAttribute('data-nonce', a.nonce);
+                    s.textContent = a.code;
+                    document.documentElement.appendChild(s);
+                }""",
+                {"nonce": nonce, "source": source, "code": _JS_TRIGGER_RISKCONTROL},
+            )
+
+            token = None
+            deadline = time.time() + timeout_ms / 1000.0
+            attempts = 0
+            while time.time() < deadline:
+                out = page.evaluate(
+                    "(n) => { const el = document.getElementById('__rc_out_' + n); return el && el.textContent ? el.textContent : null; }",
+                    nonce,
+                )
+                if out:
+                    res = json.loads(out)
+                    if res.get("ok"):
+                        token = res.get("tok")
+                        logger.info("[CAPTCHA] newRiskControl resolved: %s", json.dumps(token))
+                        break
+                    if res.get("error"):
+                        logger.warning("[CAPTCHA] newRiskControl error: %s", res)
+                        break
+
+                sel = _find_slider_container(page)
+                if sel and attempts < 6:
+                    attempts += 1
+                    logger.info("[CAPTCHA] slider visible (%s), solve attempt %d", sel, attempts)
+                    captcha_solver.solve_slider_in_container(page, sel, session_dir)
+                    page.wait_for_timeout(1500)
+                else:
+                    page.wait_for_timeout(500)
+
+            _save_debug(page, session_dir, "captcha_after_solve")
+
+            if not token:
+                logger.error("[CAPTCHA] no token obtained (attempts=%d)", attempts)
+                browser.close()
+                return {"ok": False, "error": "captcha_unsolved", "attempts": attempts, "network": network}
+
+            rc_token = (token or {}).get("rc_token") or (token or {}).get("ticket")
+            rc_uuid  = (token or {}).get("rc_uuid")
+            retry_payload = dict(payload)
+            retry_payload["rc_token"] = rc_token
+            retry_payload["rc_uuid"]  = rc_uuid
+            retry_payload["verifyData"] = {"ticket": rc_token, "randstr": rc_uuid}
+
+            logger.info("[CAPTCHA] retrying query with captcha token")
+            retry = page.evaluate(_JS_CALL_API, {
+                "payloadJson": json.dumps(retry_payload, separators=(",", ":")),
+                "endpoint":    endpoint,
+                "method":      "POST",
+            })
+            _save_debug(page, session_dir, "captcha_retry_done")
+            browser.close()
+
+            data = (retry or {}).get("data") if isinstance(retry, dict) else None
+            logger.info("[CAPTCHA] retry result ret=%s", (data or {}).get("ret") if isinstance(data, dict) else "n/a")
+            return {"ok": True, "token": token, "retry": retry, "data": data, "network": network}
+
+    except Exception:
+        logger.exception("[CAPTCHA] solve_redeem_captcha_and_retry crashed")
+        return {"ok": False, "error": "exception", "network": network}
 
 
 def get_browser_payload(

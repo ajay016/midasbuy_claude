@@ -159,6 +159,12 @@ async def get_player_info(
 
 # ── Redeem code info ──────────────────────────────────────────────────────────
 
+def _is_risk_control(data: dict) -> bool:
+    err_code = str(data.get("err_code") or "")
+    name = str((data.get("data") or {}).get("name") or "")
+    return err_code.startswith("FLEXIBLE_RISK_CONTROL") or name == "FLEXIBLE_RISK_CONTROL"
+
+
 def _redeem_query_error_message(data: dict) -> str:
     err_code = str(data.get("err_code") or "")
     msg = data.get("msg") or ""
@@ -240,11 +246,38 @@ async def query_code_info(
 
     ret = data.get("ret", -1)
     if ret != 0:
-        return RedeemResponse(
-            success=False,
-            message=_redeem_query_error_message(data),
-            raw=data,
-        )
+        # Risk control → attempt the free TCaptcha slider solve, then retry.
+        if _is_risk_control(data):
+            detail = (data.get("data") or {}).get("details") or []
+            source = detail[0].get("source") if detail and isinstance(detail[0], dict) else None
+            if source:
+                logger.info("[REDEEM] risk control hit — attempting captcha solve")
+                from accounts.services.playwright_crypto import solve_redeem_captcha_and_retry
+                solved = await _run_browser_call(
+                    solve_redeem_captcha_and_retry,
+                    payload, source, storage_state_path, country_code,
+                )
+                retry_data = (solved or {}).get("data") if isinstance(solved, dict) else None
+                if isinstance(retry_data, dict) and retry_data.get("ret") == 0:
+                    data = retry_data  # captcha cleared → fall through to success
+                else:
+                    logger.warning(
+                        "[REDEEM] captcha solve/retry did not clear: %s",
+                        (solved or {}).get("error") if isinstance(solved, dict) else solved,
+                    )
+                    return RedeemResponse(
+                        success=False,
+                        message=_redeem_query_error_message(data),
+                        raw={"query": data, "captcha": solved},
+                    )
+            else:
+                return RedeemResponse(success=False, message=_redeem_query_error_message(data), raw=data)
+        else:
+            return RedeemResponse(
+                success=False,
+                message=_redeem_query_error_message(data),
+                raw=data,
+            )
 
     products = data.get("redeem_code_info", {}).get("products", [])
     desc = ", ".join(p.get("name", "") for p in products if p.get("name"))
