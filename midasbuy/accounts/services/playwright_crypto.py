@@ -1010,6 +1010,27 @@ def solve_redeem_captcha_and_retry(
             _setup_chaos_vm_protection(page)
             _install_net_capture(page, network, session_dir)
 
+            # Capture the clean TCaptcha puzzle images for accurate gap detection.
+            captcha_imgs: dict = {}
+            def _on_img(resp):
+                try:
+                    if "cap_union_new_getcapbysig" in resp.url:
+                        import re as _re
+                        m = _re.search(r"img_index=(\d+)", resp.url)
+                        idx = m.group(1) if m else str(len(captcha_imgs))
+                        if idx not in captcha_imgs:
+                            b = resp.body()
+                            captcha_imgs[idx] = b
+                            try:
+                                with open(os.path.join(session_dir, f"captcha_getcap_{idx}.png"), "wb") as f:
+                                    f.write(b)
+                            except Exception:
+                                pass
+                            logger.info("[CAPTCHA] captured puzzle image idx=%s bytes=%d", idx, len(b))
+                except Exception:
+                    pass
+            page.on("response", _on_img)
+
             logger.info("[CAPTCHA] opening redeem page (headless=%s) for captcha solve", _SOLVER_HEADLESS)
             try:
                 page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
@@ -1084,7 +1105,13 @@ def solve_redeem_captcha_and_retry(
                 # and rapid retries get rate-limited).
                 page.wait_for_timeout(random.randint(1300, 2600))
                 logger.info("[CAPTCHA] slider visible (%s), solve attempt %d/%d", sel, attempts, max_attempts)
-                captcha_solver.solve_slider_in_container(page, sel, session_dir, attempt=attempts)
+                bg = captcha_imgs.get("1") or captcha_imgs.get("0")
+                if bg:
+                    scale = float(os.getenv("MIDASBUY_CAPTCHA_SCALE", "0.5"))
+                    x_off = int(os.getenv("MIDASBUY_CAPTCHA_X_OFFSET", "0"))
+                    captcha_solver.solve_from_clean_bg(page, sel, bg, session_dir, scale, x_off, attempts)
+                else:
+                    captcha_solver.solve_slider_in_container(page, sel, session_dir, attempt=attempts)
 
                 # Wait for this attempt's verify result before trying again.
                 waited = 0

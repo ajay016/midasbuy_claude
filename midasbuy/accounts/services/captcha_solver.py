@@ -162,11 +162,7 @@ def solve_slider_in_container(
 ) -> bool:
     """
     Screenshot the slider container, detect the gap, and drag the handle.
-    Returns True if a drag was performed (NOT whether TCaptcha accepted it — the
-    caller verifies that via the newRiskControl promise / retry result).
-
-    `scale_hint` maps image pixels -> page CSS pixels if the screenshot DPR
-    differs from layout coords (usually 1.0 for our viewport).
+    Fallback when the clean background image isn't available.
     """
     try:
         el = page.query_selector(container_selector)
@@ -199,4 +195,49 @@ def solve_slider_in_container(
         return True
     except Exception:
         logger.exception("[CAPTCHA] solve_slider_in_container failed")
+        return False
+
+
+def solve_from_clean_bg(
+    page,
+    container_selector: str,
+    bg_png: bytes,
+    session_dir: Optional[str] = None,
+    scale: float = 0.5,
+    x_offset: int = 0,
+    attempt: int = 1,
+) -> bool:
+    """
+    Detect the gap on the CLEAN TCaptcha background image (672px natural width)
+    fetched from cap_union_new_getcapbysig?img_index=1, then drag the rendered
+    handle by gap_x * scale + x_offset.
+
+    `scale` maps natural image px -> displayed px (TCaptcha renders the bg
+    scaled; ~0.5 for the 672-wide global template). Tune via MIDASBUY_CAPTCHA_SCALE
+    using the saved captcha_bg_*.png (red line = detected gap).
+    """
+    try:
+        el = page.query_selector(container_selector)
+        if el is None:
+            return False
+        box = el.bounding_box()
+        if not box:
+            return False
+
+        debug_path = os.path.join(session_dir, f"captcha_bg_{attempt}.png") if session_dir else None
+        gap_x = detect_gap_offset(bg_png, save_debug_path=debug_path)
+        if gap_x is None:
+            return False
+
+        handle_start = box["x"] + box["width"] * 0.06
+        handle_y = box["y"] + box["height"] * 0.5
+        distance = max(8, int(gap_x * scale + x_offset))
+        logger.info(
+            "[CAPTCHA] clean-bg gap_x=%d scale=%.3f x_offset=%d -> distance=%d",
+            gap_x, scale, x_offset, distance,
+        )
+        drag_slider(page, handle_start, handle_y, distance)
+        return True
+    except Exception:
+        logger.exception("[CAPTCHA] solve_from_clean_bg failed")
         return False
