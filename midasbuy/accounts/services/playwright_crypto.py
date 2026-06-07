@@ -1035,6 +1035,20 @@ def solve_redeem_captcha_and_retry(
                     pass
             page.on("response", _on_img)
 
+            # Watch the TCaptcha verify result: errorCode 12 == "operation too
+            # often" (IP/frequency penalty). Stop attempting so we don't extend it.
+            vstate = {"freq_penalty": False}
+            def _on_verify(resp):
+                try:
+                    if "cap_union_new_verify" in resp.url:
+                        d = json.loads(resp.text())
+                        if str(d.get("errorCode")) == "12":
+                            vstate["freq_penalty"] = True
+                            logger.error("[CAPTCHA] verify errorCode=12 (operation too often) — Tencent frequency/IP penalty")
+                except Exception:
+                    pass
+            page.on("response", _on_verify)
+
             logger.info("[CAPTCHA] opening redeem page (headless=%s) for captcha solve", _SOLVER_HEADLESS)
             try:
                 page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
@@ -1088,6 +1102,12 @@ def solve_redeem_captcha_and_retry(
                 return json.loads(out) if out else None
 
             while time.time() < deadline:
+                if vstate["freq_penalty"]:
+                    logger.error("[CAPTCHA] aborting: Tencent frequency penalty (errorCode 12). "
+                                 "Stop retrying for a while or use a different IP / paid solver.")
+                    _keep_open_if_requested(page, session_dir)
+                    browser.close()
+                    return {"ok": False, "error": "frequency_penalty", "network": network}
                 res = _poll_token()
                 if res:
                     if res.get("ok"):
