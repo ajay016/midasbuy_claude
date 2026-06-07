@@ -1376,16 +1376,51 @@ _RC_SLIDER_SELECTORS = (
 )
 
 
+def _frame_main_eval(fr, body_js: str, data=None):
+    """
+    Run JS in a frame's MAIN world (not patchright's isolated world) by injecting a
+    <script> element, and read the JSON result back via a DOM element. `body_js` is
+    a function body that may use `DATA` (a JSON string of `data`) and `return` a
+    JSON-able value. Requires bypass_csp for cross-origin frames.
+    """
+    rid = "__mw_" + os.urandom(5).hex()
+    fr.evaluate(
+        """(a) => {
+            const r = document.createElement('div');
+            r.id = a.rid; r.style.display = 'none';
+            r.setAttribute('data-in', a.data || '');
+            document.documentElement.appendChild(r);
+            const s = document.createElement('script');
+            s.textContent =
+                '(function(){var __el=document.getElementById("' + a.rid + '");' +
+                'var DATA=__el.getAttribute("data-in");try{' +
+                'var __v=(function(DATA){' + a.body + '})(DATA);' +
+                '__el.textContent=JSON.stringify(__v===undefined?null:__v);' +
+                '}catch(e){__el.textContent=JSON.stringify("ERR:"+e);}})();';
+            document.documentElement.appendChild(s);
+            s.remove();
+        }""",
+        {"rid": rid, "body": body_js, "data": json.dumps(data) if data is not None else ""},
+    )
+    raw = fr.evaluate(
+        "(rid) => { const r = document.getElementById(rid); const t = r ? r.textContent : null; if (r) r.remove(); return t; }",
+        rid,
+    )
+    return json.loads(raw) if raw else None
+
+
 def _rc_inject_token(page, token: dict) -> bool:
-    js = (
-        "(t) => { try { if (typeof window.__tcaptchaCallback === 'function') "
-        "{ window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr, appid: t.appid}); return 'ok'; } "
-        "return 'no_cb'; } catch (e) { return 'err:' + e; } }"
+    body = (
+        "var t = JSON.parse(DATA);"
+        "if (typeof window.__tcaptchaCallback === 'function') {"
+        "  window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr, appid: t.appid});"
+        "  return 'ok';"
+        "} return 'no_cb';"
     )
     for fr in page.frames:
         try:
-            if fr.evaluate(js, token) == "ok":
-                logger.info("[CAPTCHA] token injected into frame %s", (fr.url or "")[:90])
+            if _frame_main_eval(fr, body, data=token) == "ok":
+                logger.info("[CAPTCHA] token injected (main world) into frame %s", (fr.url or "")[:90])
                 return True
         except Exception:
             continue
@@ -1533,19 +1568,17 @@ def obtain_rc_token_via_provider(
 
 
 def _rc_log_frame_diagnostics(page) -> None:
-    """Log, per frame, how TCaptcha is exposed — to learn how to hand it the token."""
-    probe = """
-    () => ({
-        url: location.href.slice(0, 120),
-        tcaptcha: typeof window.TencentCaptcha,
-        hookInstalled: !!window.__tcapHookInstalled,
-        callbackCaptured: typeof window.__tcaptchaCallback,
-        captchaKeys: Object.keys(window).filter(k => /captcha|tcap|cap_|tdc|verif/i.test(k)).slice(0, 25),
-    })
-    """
+    """Log, per frame (MAIN world), how TCaptcha is exposed."""
+    body = (
+        "return {url: location.href.slice(0,120),"
+        " tcaptcha: typeof window.TencentCaptcha,"
+        " hookInstalled: !!window.__tcapHookInstalled,"
+        " callbackCaptured: typeof window.__tcaptchaCallback,"
+        " captchaKeys: Object.keys(window).filter(function(k){return /captcha|tcap|cap_|tdc|verif/i.test(k);}).slice(0,25)};"
+    )
     for fr in page.frames:
         try:
-            info = fr.evaluate(probe)
+            info = _frame_main_eval(fr, body)
             logger.info("[CAPTCHA][DIAG] %s", json.dumps(info))
         except Exception as exc:
             logger.info("[CAPTCHA][DIAG] frame %s probe failed: %s", (fr.url or "")[:80], exc)
