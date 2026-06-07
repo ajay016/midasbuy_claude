@@ -1486,7 +1486,12 @@ def _setup_tcaptcha_hook_route(page) -> None:
             route.fulfill(status=resp.status, headers=headers, body=resp.body() + _TCAPTCHA_WRAP)
             logger.info("[CAPTCHA] TCaptcha-global.js hook injected via route")
         except Exception as exc:
-            logger.warning("[CAPTCHA] TCaptcha route hook failed (%s) — continuing", exc)
+            # Common + harmless: the browser closed (we already have rc_token) while
+            # a background fetch was mid-flight.
+            if "disposed" in str(exc).lower() or "closed" in str(exc).lower():
+                logger.debug("[CAPTCHA] TCaptcha route hook skipped (context closed)")
+            else:
+                logger.warning("[CAPTCHA] TCaptcha route hook failed (%s) — continuing", exc)
             try:
                 route.continue_()
             except Exception:
