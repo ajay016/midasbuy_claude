@@ -1525,22 +1525,59 @@ def obtain_rc_token_via_provider(
             _setup_tcaptcha_hook_route(page)
 
             # Capture the post-callback traffic (PAValidate / Tencent verify) so we
-            # can see whether/why the ticket is accepted.
+            # can see whether/why the ticket is accepted. Full bodies (incl. the
+            # slider JS) are dumped to rc_network.txt for offline inspection.
+            dump_path = os.path.join(session_dir, "rc_network.txt")
+            try:
+                open(dump_path, "w", encoding="utf-8").close()
+            except Exception:
+                pass
+
+            def _dump(line):
+                try:
+                    with open(dump_path, "a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                except Exception:
+                    pass
+
+            _verify_hints = ("pavalidate", "paenroll", "paidentify", "pasetup",
+                             "cap_union_new_verify", "secondary")
+            _capture_hints = _verify_hints + ("/v1/rc/3ds/assets/", "/v1/rc/3ds/api/")
+
+            def _on_req(req):
+                try:
+                    u = req.url.lower()
+                    if any(h in u for h in _verify_hints):
+                        pd = None
+                        try:
+                            pd = req.post_data
+                        except Exception:
+                            pd = None
+                        _dump(f"\n>> {req.method} {req.url}")
+                        if pd:
+                            _dump("POST_DATA: " + pd[:8000])
+                        logger.info("[CAPTCHA][NET] >> %s %s", req.method, req.url[:120])
+                except Exception:
+                    pass
+
             def _on_resp(resp):
                 try:
                     u = resp.url.lower()
-                    if any(h in u for h in ("pavalidate", "paenroll", "paidentify",
-                                            "cap_union_new_verify", "/v1/rc/3ds/", "secondary")):
+                    if any(h in u for h in _capture_hints):
                         body = None
                         try:
                             body = resp.text()
                         except Exception:
                             body = None
-                        logger.info("[CAPTCHA][NET] %s %s", resp.status, resp.url[:130])
+                        _dump(f"\n<< {resp.status} {resp.url}")
                         if body:
-                            logger.info("[CAPTCHA][NET] body=%s", (body or "")[:600])
+                            _dump(body[:60000])
+                        if any(h in u for h in _verify_hints):
+                            logger.info("[CAPTCHA][NET] << %s %s body=%s", resp.status, resp.url[:120], (body or "")[:300])
                 except Exception:
                     pass
+
+            page.on("request", _on_req)
             page.on("response", _on_resp)
 
             logger.info("[CAPTCHA] obtaining rc_token via provider (challenge ready)")
