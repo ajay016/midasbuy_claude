@@ -10,7 +10,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
+from threading import current_thread
 from typing import Optional
 
 from .schemas import PlayerInfo, PlayerLookupResponse, RedeemResponse
@@ -20,30 +22,34 @@ logger = logging.getLogger(__name__)
 _APPID = "1450015065"
 _PF    = "mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas"
 _BROWSER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-browser")
-# Separate thread for the captcha solver: it spins up its OWN sync_playwright,
-# which must NOT share a thread with the cached session's live Playwright loop
-# (that raises "Sync API inside the asyncio loop").
-_SOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-captcha")
 _QUERY_REDEEM_ENDPOINT = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo"
+
+
+def _run_browser_call_sync(func, args):
+    logger.debug(
+        "[SERVICE] browser call thread=%s function=%s",
+        current_thread().name,
+        getattr(func, "__name__", repr(func)),
+    )
+    return func(*args)
 
 
 async def _run_browser_call(func, *args):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_BROWSER_EXECUTOR, lambda: func(*args))
-
-
-async def _run_solver_call(func, *args):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_SOLVER_EXECUTOR, lambda: func(*args))
+    return await loop.run_in_executor(_BROWSER_EXECUTOR, _run_browser_call_sync, func, args)
 
 
 async def shutdown_browser_worker() -> None:
     from accounts.services.playwright_crypto import close_cached_browser_sessions
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(_BROWSER_EXECUTOR, close_cached_browser_sessions)
+    await loop.run_in_executor(
+        _BROWSER_EXECUTOR,
+        _run_browser_call_sync,
+        close_cached_browser_sessions,
+        (),
+    )
     _BROWSER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-    _SOLVER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 def _looks_like_encrypt_error(data: Optional[dict]) -> bool:
@@ -169,12 +175,6 @@ async def get_player_info(
 
 # ── Redeem code info ──────────────────────────────────────────────────────────
 
-def _is_risk_control(data: dict) -> bool:
-    err_code = str(data.get("err_code") or "")
-    name = str((data.get("data") or {}).get("name") or "")
-    return err_code.startswith("FLEXIBLE_RISK_CONTROL") or name == "FLEXIBLE_RISK_CONTROL"
-
-
 def _redeem_query_error_message(data: dict) -> str:
     err_code = str(data.get("err_code") or "")
     msg = data.get("msg") or ""
@@ -214,32 +214,81 @@ def _log_redeem_query_response(data: dict) -> None:
     )
 
 
+def _extract_risk_challenge(data: dict) -> tuple[str, str]:
+    err_code = str(data.get("err_code") or "")
+    if not err_code.startswith("FLEXIBLE_RISK_CONTROL"):
+        return "", ""
+
+    details = data.get("data", {}).get("details", [])
+    detail = details[0] if details and isinstance(details[0], dict) else {}
+    return str(detail.get("error") or ""), str(detail.get("source") or "")
+
+
+def _get_risk_sdk_url(storage_state_path: str) -> str:
+    session_dir = os.path.dirname(storage_state_path)
+    server_data_path = os.path.join(session_dir, "server_data.json")
+    browser_page_path = os.path.join(session_dir, "browser_page.html")
+    sdk_md5 = ""
+
+    if os.path.exists(server_data_path):
+        try:
+            with open(server_data_path, encoding="utf-8") as file:
+                server_data = json.load(file)
+            sdk_md5 = str(
+                server_data.get("newRiskCtrlComponentOptions", {}).get("flexSdkMd5") or ""
+            )
+        except (OSError, ValueError, TypeError):
+            logger.debug("[REDEEM] could not read risk SDK version from server_data.json")
+
+    if not sdk_md5 and os.path.exists(browser_page_path):
+        try:
+            with open(browser_page_path, encoding="utf-8") as file:
+                html = file.read()
+            match = re.search(
+                r'"newRiskCtrlComponentOptions"\s*:\s*\{[^}]*"flexSdkMd5"\s*:\s*"([^"]+)"',
+                html,
+            )
+            sdk_md5 = match.group(1) if match else ""
+        except OSError:
+            logger.debug("[REDEEM] could not read risk SDK version from browser_page.html")
+
+    if sdk_md5:
+        return (
+            "https://cdn.midasbuy.com/h5/overseah5/js/"
+            f"newRiskControlApi.{sdk_md5}.js"
+        )
+
+    return "https://cdn.midasbuy.com/h5/overseah5/js/newRiskControlApi.js"
+
+
 async def query_code_info(
     player_id: str,
     pin_code: str,
     country_code: str = "bd",
     storage_state_path: Optional[str] = None,
     cookies: Optional[str] = None,
+    zone_id: str = "1",
+    rc_token: Optional[str] = None,
+    rc_uuid: Optional[str] = None,
 ) -> RedeemResponse:
     if not storage_state_path:
         return RedeemResponse(success=False, message="No session.")
 
     clean_code = "".join(pin_code.split())
-    return_url = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
     payload = {
         "redeem_code": clean_code,
-        "role_id": player_id,
-        "roleId": player_id,
-        "openid": player_id,
-        "offer_id": _APPID,
-        "appId": _APPID,
-        "channel": "MIDASBUY_REDEEM",
-        "channel_id": "MIDASBUY_REDEEM",
-        "channelId": "MIDASBUY_REDEEM",
-        "flexible_return_url": return_url,
-        "FlexibleReturnUrl": return_url,
-        "successUrl": f"{return_url}/success?isFromJsx=true&buy_type_key=REDEEM",
+        "open_id": player_id,
+        "zone_id": str(zone_id or "1"),
     }
+    if rc_token and rc_uuid:
+        payload.update(
+            {
+                "rc_token": rc_token,
+                "rc_uuid": rc_uuid,
+                "channel": "os_midaspay_v2",
+            }
+        )
+        logger.info("[REDEEM] retrying redeem-code query with completed risk verification")
 
     data = await _api_call(
         payload,
@@ -256,38 +305,22 @@ async def query_code_info(
 
     ret = data.get("ret", -1)
     if ret != 0:
-        # Risk control → attempt the free TCaptcha slider solve, then retry.
-        if _is_risk_control(data):
-            detail = (data.get("data") or {}).get("details") or []
-            source = detail[0].get("source") if detail and isinstance(detail[0], dict) else None
-            if source:
-                logger.info("[REDEEM] risk control hit — attempting captcha solve")
-                from accounts.services.playwright_crypto import solve_redeem_captcha_and_retry
-                solved = await _run_solver_call(
-                    solve_redeem_captcha_and_retry,
-                    payload, source, storage_state_path, country_code,
-                )
-                retry_data = (solved or {}).get("data") if isinstance(solved, dict) else None
-                if isinstance(retry_data, dict) and retry_data.get("ret") == 0:
-                    data = retry_data  # captcha cleared → fall through to success
-                else:
-                    logger.warning(
-                        "[REDEEM] captcha solve/retry did not clear: %s",
-                        (solved or {}).get("error") if isinstance(solved, dict) else solved,
-                    )
-                    return RedeemResponse(
-                        success=False,
-                        message=_redeem_query_error_message(data),
-                        raw={"query": data, "captcha": solved},
-                    )
-            else:
-                return RedeemResponse(success=False, message=_redeem_query_error_message(data), raw=data)
-        else:
+        challenge_type, challenge_url = _extract_risk_challenge(data)
+        if challenge_type == "graphic" and challenge_url:
             return RedeemResponse(
                 success=False,
-                message=_redeem_query_error_message(data),
+                message="Security verification is required to continue.",
+                verification_required=True,
+                challenge_url=challenge_url,
+                risk_sdk_url=_get_risk_sdk_url(storage_state_path),
                 raw=data,
             )
+
+        return RedeemResponse(
+            success=False,
+            message=_redeem_query_error_message(data),
+            raw=data,
+        )
 
     products = data.get("redeem_code_info", {}).get("products", [])
     desc = ", ".join(p.get("name", "") for p in products if p.get("name"))
@@ -306,8 +339,20 @@ async def submit_redeem(
     country_code: str = "bd",
     storage_state_path: Optional[str] = None,
     cookies: Optional[str] = None,
+    zone_id: str = "1",
+    rc_token: Optional[str] = None,
+    rc_uuid: Optional[str] = None,
 ) -> RedeemResponse:
-    check = await query_code_info(player_id, pin_code, country_code, storage_state_path, cookies)
+    check = await query_code_info(
+        player_id,
+        pin_code,
+        country_code,
+        storage_state_path,
+        cookies,
+        zone_id,
+        rc_token,
+        rc_uuid,
+    )
     if not check.success:
         return check
 

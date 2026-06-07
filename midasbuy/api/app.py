@@ -86,4 +86,13 @@ async def player_info(
 @api_app.post("/redeem", response_model=RedeemResponse)
 async def redeem(body: RedeemRequest):
     ssp, cookies = await _resolve_session(body.account_id)
-    return await submit_redeem(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+    return await submit_redeem(
+        body.player_id,
+        body.pin_code,
+        body.country_code,
+        ssp,
+        cookies,
+        body.zone_id,
+        body.rc_token,
+        body.rc_uuid,
+    )

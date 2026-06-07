@@ -452,6 +452,9 @@
 
     <script>
         let verifiedPlayerId = null;
+        let verifiedPlayerZoneId = "1";
+        let riskSdkPromise = null;
+        let riskSdkUrl = null;
 
         function setStatus(elId, type, html) {
             const el = document.getElementById(elId);
@@ -468,6 +471,102 @@
         function getAccountId() {
             const sel = document.getElementById("accountSelect");
             return sel ? sel.value : null;
+        }
+
+        function loadRiskSdk(sdkUrl) {
+            if (window.midas && typeof window.midas.newRiskControl === "function") {
+                return Promise.resolve();
+            }
+
+            if (riskSdkPromise && riskSdkUrl === sdkUrl) {
+                return riskSdkPromise;
+            }
+
+            riskSdkUrl = sdkUrl;
+            riskSdkPromise = new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = sdkUrl;
+                script.async = true;
+                script.onload = () => {
+                    if (window.midas && typeof window.midas.newRiskControl === "function") {
+                        resolve();
+                        return;
+                    }
+
+                    reject(new Error("Midasbuy security verification did not initialize."));
+                };
+                script.onerror = () => {
+                    riskSdkPromise = null;
+                    riskSdkUrl = null;
+                    reject(new Error("Could not load Midasbuy security verification."));
+                };
+                document.head.appendChild(script);
+            });
+
+            return riskSdkPromise;
+        }
+
+        async function solveRiskChallenge(challengeUrl, sdkUrl) {
+            await loadRiskSdk(sdkUrl);
+            const result = await window.midas.newRiskControl(challengeUrl);
+
+            if (!result || !result.rc_token || !result.rc_uuid) {
+                throw new Error("Security verification was not completed.");
+            }
+
+            return result;
+        }
+
+        async function postRedeem(payload) {
+            const resp = await fetch("/api/redeem", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+
+            if (!resp.ok) {
+                throw new Error(data.detail || "Redeem request failed.");
+            }
+
+            return data;
+        }
+
+        async function submitRedeemWithVerification(payload) {
+            let data = await postRedeem(payload);
+
+            for (let attempt = 0; attempt < 2 && data.verification_required; attempt += 1) {
+                if (!data.challenge_url) {
+                    throw new Error("Midasbuy did not provide a verification URL.");
+                }
+
+                if (!data.risk_sdk_url) {
+                    throw new Error("Midasbuy did not provide its verification SDK.");
+                }
+
+                setStatus(
+                    "redeemStatus",
+                    "loading",
+                    '<span class="spinner"></span>Complete the Midasbuy security verification...'
+                );
+                const verification = await solveRiskChallenge(
+                    data.challenge_url,
+                    data.risk_sdk_url
+                );
+                data = await postRedeem({
+                    ...payload,
+                    rc_token: verification.rc_token,
+                    rc_uuid: verification.rc_uuid,
+                });
+            }
+
+            if (data.verification_required) {
+                throw new Error("Midasbuy requested security verification again. Please retry.");
+            }
+
+            return data;
         }
 
         async function lookupPlayer() {
@@ -490,6 +589,7 @@
             document.getElementById("playerCard").classList.remove("show");
             document.getElementById("redeemBtn").disabled = true;
             verifiedPlayerId = null;
+            verifiedPlayerZoneId = "1";
 
             setStatus("lookupStatus", "loading", '<span class="spinner"></span>Looking up player...');
 
@@ -513,6 +613,7 @@
                 document.getElementById("playerCard").classList.add("show");
 
                 verifiedPlayerId = playerId;
+                verifiedPlayerZoneId = p.zone_id || "1";
                 document.getElementById("redeemBtn").disabled = false;
                 clearStatus("lookupStatus");
             } catch (err) {
@@ -547,19 +648,13 @@
             setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
 
             try {
-                const resp = await fetch("/api/redeem", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        player_id: verifiedPlayerId,
-                        pin_code: pinCode,
-                        country_code: country,
-                        account_id: parseInt(accountId, 10),
-                    }),
+                const data = await submitRedeemWithVerification({
+                    player_id: verifiedPlayerId,
+                    pin_code: pinCode,
+                    country_code: country,
+                    zone_id: verifiedPlayerZoneId,
+                    account_id: parseInt(accountId, 10),
                 });
-                const data = await resp.json();
 
                 if (data.success) {
                     setStatus("redeemStatus", "success", data.message || "Redeemed successfully.");
@@ -568,7 +663,11 @@
                     setStatus("redeemStatus", "error", data.message || data.detail || "Redemption failed.");
                 }
             } catch (err) {
-                setStatus("redeemStatus", "error", "Network error. Please try again.");
+                setStatus(
+                    "redeemStatus",
+                    "error",
+                    err.message || "Network error. Please try again."
+                );
             } finally {
                 btn.disabled = false;
             }

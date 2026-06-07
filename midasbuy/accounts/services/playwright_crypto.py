@@ -25,7 +25,6 @@ Note: forterToken / feh-- localStorage keys are NOT read by the Chaos VM
 import json
 import logging
 import os
-import random
 import time
 from dataclasses import dataclass, field
 from threading import Lock, get_ident
@@ -202,24 +201,78 @@ async ({payloadJson, endpoint, method}) => {
 
         // Build publicParams — mirrors ei() in 91.79b63beb.bundle.js module 36453.
         // server validates the full merged payload; omitting these fields causes HTTP 500.
-        const sd = window.SERVER_DATA || {};
-        const payInfo = sd.payInfo || {};
+        const snapshot = window.__backendBootstrap || {};
+        const liveServerData = window.SERVER_DATA || {};
+        const sd = Object.assign({}, snapshot, liveServerData);
+        sd.payInfo = Object.assign(
+            {},
+            snapshot.payInfo || {},
+            liveServerData.payInfo || {}
+        );
+        window.SERVER_DATA = sd;
+        const payInfo = sd.payInfo;
         const shopInfo = sd.shopInfo || {};
         const ri = window.__Report_INFO || {};
         const rp = sd.reportParams || {};
+        const urlParams = new URLSearchParams(location.search);
         const queryString = (obj) => Object.keys(obj)
             .filter(k => obj[k] !== undefined && obj[k] !== null)
             .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]))
             .join('&');
+        let storedUser = {};
+        try {
+            storedUser = JSON.parse(sessionStorage.getItem('user_login_data') || '{}');
+        } catch(e) {}
+        let actualPayload = JSON.parse(payloadJson);
+        const verifiedPlayerStorageKey = 'midasbuy_backend_verified_players';
+        let verifiedPlayers = {};
+        let verifiedPlayerApplied = false;
+        try {
+            verifiedPlayers = JSON.parse(
+                sessionStorage.getItem(verifiedPlayerStorageKey) || '{}'
+            );
+        } catch(e) {}
+        if (endpoint.endsWith('/QueryRedeemCodeInfo')) {
+            const verifiedPlayer = verifiedPlayers[actualPayload.open_id];
+            if (verifiedPlayer) {
+                Object.assign(payInfo, verifiedPlayer);
+                verifiedPlayerApplied = true;
+            }
+        }
 
-        const device_id = rp.midasbuyDeviceId || ri.midasbuyDeviceId || '';
-        const muid      = rp.midasuid        || ri.midasuid        || '';
+        const deviceMatch = document.cookie.match(/midasbuyDeviceId=([^;]*)/);
+        const device_id = (
+            rp.midasbuyDeviceId ||
+            ri.midasbuyDeviceId ||
+            (deviceMatch ? deviceMatch[1] : '')
+        );
+        const muid = (
+            rp.midasuid ||
+            ri.midasuid ||
+            sd.muid ||
+            sd.user?.uid ||
+            payInfo.midasUser?.uid ||
+            storedUser.uid ||
+            ''
+        );
 
         // tdrc_fp is the UUID cookie value — NOT a Forter token
         const uuidMatch = document.cookie.match(/UUID=([^;]*)/);
         const tdrc_fp   = uuidMatch ? uuidMatch[1] : '';
 
-        const cgi_extend_obj = {device_id, pagetoken: '', tdrc_fp, muid};
+        const pageOpenId = (
+            payInfo.openid ||
+            actualPayload.openid ||
+            actualPayload.open_id ||
+            ''
+        );
+        let serverTimeOffset = Number(window._SERVER_TIME_OFFSET || 0);
+        if (serverTimeOffset > 0 && serverTimeOffset <= 15000) {
+            serverTimeOffset = 0;
+        }
+        const pageTime = Date.now() - serverTimeOffset;
+        const pagetoken = btoa(`${location.hostname}_${pageTime}_${pageOpenId}`);
+        const cgi_extend_obj = {device_id, pagetoken, tdrc_fp, muid};
         const cgi_extend     = queryString(cgi_extend_obj);
         const drm_info       = queryString(payInfo.drm_info || {});
         const buyType        = sd.buyType || (location.pathname.includes('/redeem/') ? 'REDEEM' : '');
@@ -232,19 +285,69 @@ async ({payloadJson, endpoint, method}) => {
             cgi_extend,
             drm_info,
             midasbuyArea:  payInfo.midasbuyArea || sd.midasbuyArea || '',
-            shopcode:      shopInfo.shopcode || '',
+            shopcode:      payInfo.shopcode || payInfo.shop_id || shopInfo.shopcode || '',
             buyType,
-            midas_sdk:     '1',
+            midas_sdk:     '0',
             currency_type: payInfo.currency_type || sd.currency_type || 'USD',
             _id:           Math.random(),
-            sc:            '',
-            from:          '',
-            task_token:    '',
+            sc:            urlParams.get('sc') || '',
+            from:          urlParams.get('from') || '',
+            task_token:    urlParams.get('task_token') || '',
             cgi_extend_obj,
         };
+        Object.assign(publicParams, sd._Exp_DATA || {});
+
+        const initExtendParams = urlParams.get('initExtendParams');
+        if (initExtendParams) {
+            try {
+                Object.assign(publicParams, JSON.parse(atob(initExtendParams)));
+            } catch(e) {}
+        }
 
         // Merge: actualPayload fields win over publicParams on overlap (e.g. country, appid)
-        const actualPayload = JSON.parse(payloadJson);
+        if (endpoint.endsWith('/QueryRedeemCodeInfo')) {
+            const verificationPayload = actualPayload;
+            const zoneParts = String(
+                actualPayload.zone_id ||
+                payInfo.zoneid ||
+                payInfo.zone_id ||
+                payInfo.currentBindUser?.zoneid ||
+                '1'
+            ).split('_');
+            const language = (
+                sd.countryInfo?.iso?.language ||
+                (Array.isArray(sd.countryInfo?.lang) ? sd.countryInfo.lang[0] : sd.countryInfo?.lang) ||
+                payInfo.cgi_language ||
+                document.documentElement.lang ||
+                navigator.language ||
+                'en'
+            ).split('-')[0];
+            const user = sd.user || payInfo.midasUser || storedUser;
+
+            actualPayload = {
+                redeem_code: actualPayload.redeem_code,
+                subchannel: 'MIDASBUY_REDEEM',
+                direct_redeem: '1',
+                offer_id: payInfo.appid || sd.appid || '1450015065',
+                platform: payInfo.platform || 'android',
+                server_id: zoneParts[0] || '',
+                region: payInfo.country || sd.country || 'BD',
+                open_id: actualPayload.open_id || '',
+                muid: user.uid || actualPayload.muid || sd.muid || '',
+                flexible_return_url: (
+                    `https://${location.hostname}/h5/overseah5/views/riskcontrol/landing.html`
+                ),
+                user_ip: payInfo.ipInfo?.mall_ip || '',
+                role_id: zoneParts[1] || '',
+                language,
+                shop_code: payInfo.shopcode || payInfo.shop_id || shopInfo.shopcode || '',
+            };
+            if (verificationPayload.rc_token && verificationPayload.rc_uuid) {
+                actualPayload.rc_token = verificationPayload.rc_token;
+                actualPayload.rc_uuid = verificationPayload.rc_uuid;
+                actualPayload.channel = verificationPayload.channel || 'os_midaspay_v2';
+            }
+        }
         const fullPayload   = Object.assign({}, publicParams, actualPayload);
         for (const k of Object.keys(fullPayload)) {
             if (fullPayload[k] !== undefined && typeof fullPayload[k] !== 'object') {
@@ -275,7 +378,47 @@ async ({payloadJson, endpoint, method}) => {
             return {error: 'invalid_json', status: resp.status,
                     encrypt_msg_len: encrypt_msg.length, text: text.substring(0, 300)};
         }
-        return {ok: true, status: resp.status, data, encrypt_msg_len: encrypt_msg.length};
+        if (endpoint.endsWith('/getCharac') && Number(data?.ret) === 0 && data?.info) {
+            const info = data.info;
+            const verifiedPlayer = {
+                openid: info.openid || '',
+                charac_name: info.charac_name || '',
+                zoneid: info.zoneid || actualPayload.zoneid || '',
+                userid: actualPayload.openid || '',
+                is_ban: !!info.is_ban,
+                register_country: info.register_country || '',
+                active_country: info.active_country || '',
+                region: info.region || '',
+            };
+            Object.assign(payInfo, verifiedPlayer);
+            verifiedPlayers[verifiedPlayer.userid] = verifiedPlayer;
+            try {
+                sessionStorage.setItem(
+                    verifiedPlayerStorageKey,
+                    JSON.stringify(verifiedPlayers)
+                );
+            } catch(e) {}
+        }
+        return {
+            ok: true,
+            status: resp.status,
+            data,
+            encrypt_msg_len: encrypt_msg.length,
+            request_field_names: Object.keys(actualPayload).sort(),
+            public_field_names: Object.keys(publicParams).sort(),
+            full_json_length: fullJson.length,
+            cgi_extend_length: cgi_extend.length,
+            drm_info_length: drm_info.length,
+            exp_data_length: JSON.stringify(sd._Exp_DATA || {}).length,
+            pagetoken_length: pagetoken.length,
+            has_device_id: !!device_id,
+            has_muid: !!muid,
+            has_ip_info: !!payInfo.ipInfo?.mall_ip,
+            has_drm_info: !!Object.keys(payInfo.drm_info || {}).length,
+            has_exp_data: !!Object.keys(sd._Exp_DATA || {}).length,
+            verified_player_count: Object.keys(verifiedPlayers).length,
+            verified_player_applied: verifiedPlayerApplied,
+        };
     } catch(e) {
         return {error: 'js_exception', detail: String(e), stack: (e.stack||'').substring(0,500)};
     }
@@ -304,21 +447,60 @@ async ({payloadJson}) => {
         }
         if (typeof window.xMidas !== 'function') return {error: 'no_xmidas_function'};
 
-        const sd = window.SERVER_DATA || {};
-        const payInfo = sd.payInfo || {};
+        const snapshot = window.__backendBootstrap || {};
+        const liveServerData = window.SERVER_DATA || {};
+        const sd = Object.assign({}, snapshot, liveServerData);
+        sd.payInfo = Object.assign(
+            {},
+            snapshot.payInfo || {},
+            liveServerData.payInfo || {}
+        );
+        window.SERVER_DATA = sd;
+        const payInfo = sd.payInfo;
         const shopInfo = sd.shopInfo || {};
         const ri = window.__Report_INFO || {};
         const rp = sd.reportParams || {};
+        const urlParams = new URLSearchParams(location.search);
         const queryString = (obj) => Object.keys(obj)
             .filter(k => obj[k] !== undefined && obj[k] !== null)
             .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]))
             .join('&');
+        let storedUser = {};
+        try {
+            storedUser = JSON.parse(sessionStorage.getItem('user_login_data') || '{}');
+        } catch(e) {}
 
-        const device_id = rp.midasbuyDeviceId || ri.midasbuyDeviceId || '';
-        const muid      = rp.midasuid        || ri.midasuid        || '';
+        const deviceMatch = document.cookie.match(/midasbuyDeviceId=([^;]*)/);
+        const device_id = (
+            rp.midasbuyDeviceId ||
+            ri.midasbuyDeviceId ||
+            (deviceMatch ? deviceMatch[1] : '')
+        );
+        const muid = (
+            rp.midasuid ||
+            ri.midasuid ||
+            sd.muid ||
+            sd.user?.uid ||
+            payInfo.midasUser?.uid ||
+            storedUser.uid ||
+            ''
+        );
         const uuidMatch = document.cookie.match(/UUID=([^;]*)/);
         const tdrc_fp   = uuidMatch ? uuidMatch[1] : '';
-        const cgi_extend_obj = {device_id, pagetoken: '', tdrc_fp, muid};
+        const actualPayload = JSON.parse(payloadJson);
+        const pageOpenId = (
+            payInfo.openid ||
+            actualPayload.openid ||
+            actualPayload.open_id ||
+            ''
+        );
+        let serverTimeOffset = Number(window._SERVER_TIME_OFFSET || 0);
+        if (serverTimeOffset > 0 && serverTimeOffset <= 15000) {
+            serverTimeOffset = 0;
+        }
+        const pageTime = Date.now() - serverTimeOffset;
+        const pagetoken = btoa(`${location.hostname}_${pageTime}_${pageOpenId}`);
+        const cgi_extend_obj = {device_id, pagetoken, tdrc_fp, muid};
         const buyType = sd.buyType || (location.pathname.includes('/redeem/') ? 'REDEEM' : '');
 
         const publicParams = {
@@ -331,16 +513,22 @@ async ({payloadJson}) => {
             midasbuyArea: payInfo.midasbuyArea || sd.midasbuyArea || '',
             shopcode: shopInfo.shopcode || '',
             buyType,
-            midas_sdk: '1',
+            midas_sdk: '0',
             currency_type: payInfo.currency_type || sd.currency_type || 'USD',
             _id: Math.random(),
-            sc: '',
-            from: '',
-            task_token: '',
+            sc: urlParams.get('sc') || '',
+            from: urlParams.get('from') || '',
+            task_token: urlParams.get('task_token') || '',
             cgi_extend_obj,
         };
+        Object.assign(publicParams, sd._Exp_DATA || {});
 
-        const actualPayload = JSON.parse(payloadJson);
+        const initExtendParams = urlParams.get('initExtendParams');
+        if (initExtendParams) {
+            try {
+                Object.assign(publicParams, JSON.parse(atob(initExtendParams)));
+            } catch(e) {}
+        }
         const fullPayload   = Object.assign({}, publicParams, actualPayload);
         for (const k of Object.keys(fullPayload)) {
             if (fullPayload[k] !== undefined && typeof fullPayload[k] !== 'object') {
@@ -440,11 +628,121 @@ def _load_session_storage(storage_state_path: str) -> dict:
         return {}
 
 
-def _launch_context(p, storage_state_path: str, headless: bool = True, bypass_csp: bool = False):
+def _select_server_data_snapshot(data: dict) -> dict:
+    keys = (
+        "country",
+        "appid",
+        "muid",
+        "payInfo",
+        "reportParams",
+        "_Exp_DATA",
+        "user",
+        "shopInfo",
+        "countryInfo",
+        "buyType",
+        "gameConfig",
+        "newRiskCtrlComponentOptions",
+    )
+    return {key: data.get(key) for key in keys if key in data}
+
+
+def _server_data_snapshot_is_complete(data: dict) -> bool:
+    pay_info = data.get("payInfo") or {}
+    ip_info = pay_info.get("ipInfo") or {}
+    return bool(
+        ip_info.get("mall_ip")
+        and pay_info.get("drm_info")
+        and data.get("_Exp_DATA")
+    )
+
+
+def _load_server_data_snapshot(storage_state_path: str) -> dict:
+    session_dir = os.path.dirname(storage_state_path)
+    snapshot_path = os.path.join(session_dir, "server_data.json")
+
+    if os.path.exists(snapshot_path):
+        try:
+            with open(snapshot_path, encoding="utf-8") as f:
+                data = json.load(f)
+            snapshot = _select_server_data_snapshot(data)
+            if _server_data_snapshot_is_complete(snapshot):
+                logger.info("[CRYPTO] loaded complete SERVER_DATA snapshot")
+                return snapshot
+            logger.warning(
+                "[CRYPTO] SERVER_DATA snapshot is incomplete; recovering from browser_page.html"
+            )
+        except Exception as exc:
+            logger.warning("[CRYPTO] could not load server_data.json: %s", exc)
+
+    html_path = os.path.join(session_dir, "browser_page.html")
+    if not os.path.exists(html_path):
+        return {}
+
+    try:
+        with open(html_path, encoding="utf-8") as f:
+            html = f.read()
+        marker = "var SERVER_DATA = "
+        start = html.find(marker)
+        if start < 0:
+            return {}
+        start += len(marker)
+        data, _ = json.JSONDecoder().raw_decode(html[start:])
+        snapshot = _select_server_data_snapshot(data)
+        if not _server_data_snapshot_is_complete(snapshot):
+            logger.warning(
+                "[CRYPTO] browser_page.html SERVER_DATA bootstrap is incomplete"
+            )
+            return {}
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=4)
+        logger.info(
+            "[CRYPTO] recovered complete SERVER_DATA snapshot from browser_page.html"
+        )
+        return snapshot
+    except Exception as exc:
+        logger.warning("[CRYPTO] could not recover SERVER_DATA snapshot: %s", exc)
+        return {}
+
+
+def _restore_server_data_snapshot(page, storage_state_path: str) -> None:
+    snapshot = _load_server_data_snapshot(storage_state_path)
+    if not snapshot:
+        logger.warning("[CRYPTO] no SERVER_DATA snapshot available")
+        return
+
+    try:
+        result = page.evaluate("""
+            (snapshot) => {
+                window.__backendBootstrap = snapshot;
+                const live = window.SERVER_DATA || {};
+                const merged = Object.assign({}, snapshot, live);
+                merged.payInfo = Object.assign(
+                    {},
+                    snapshot.payInfo || {},
+                    live.payInfo || {}
+                );
+                window.SERVER_DATA = merged;
+                return {
+                    pay: !!Object.keys(merged.payInfo || {}).length,
+                    ip: !!merged.payInfo?.ipInfo?.mall_ip,
+                    drm: !!Object.keys(merged.payInfo?.drm_info || {}).length,
+                    exp: !!Object.keys(merged._Exp_DATA || {}).length,
+                };
+            }
+        """, snapshot)
+        logger.info("[CRYPTO] restored SERVER_DATA snapshot: %s", result)
+    except Exception as exc:
+        logger.warning("[CRYPTO] SERVER_DATA snapshot restore failed: %s", exc)
+
+
+def _launch_context(p, storage_state_path: str, country_code: str):
+    from django.conf import settings
+
     ss_data = _load_session_storage(storage_state_path)
+    server_data = _load_server_data_snapshot(storage_state_path)
 
     browser = p.chromium.launch(
-        headless=headless,
+        headless=getattr(settings, "MIDASBUY_CRYPTO_BROWSER_HEADLESS", True),
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -452,17 +750,23 @@ def _launch_context(p, storage_state_path: str, headless: bool = True, bypass_cs
         ],
     )
 
+    timezone_by_country = {
+        "bd": "Asia/Dhaka",
+        "br": "America/Sao_Paulo",
+        "id": "Asia/Jakarta",
+        "in": "Asia/Kolkata",
+        "my": "Asia/Kuala_Lumpur",
+        "ph": "Asia/Manila",
+        "pk": "Asia/Karachi",
+        "sa": "Asia/Riyadh",
+        "tr": "Europe/Istanbul",
+        "us": "America/New_York",
+    }
     context = browser.new_context(
         storage_state=storage_state_path,
-        viewport={"width": 1440, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
+        viewport=getattr(settings, "MIDASBUY_BROWSER_VIEWPORT", {"width": 1440, "height": 900}),
         locale="en-US",
-        timezone_id="America/New_York",
-        bypass_csp=bypass_csp,
+        timezone_id=timezone_by_country.get(country_code.lower(), "UTC"),
     )
 
     context.add_init_script(_STEALTH_JS)
@@ -475,6 +779,22 @@ def _launch_context(p, storage_state_path: str, headless: bool = True, bypass_cs
                 for (const [k,v] of Object.entries(data)) {{
                     try {{ sessionStorage.setItem(k, v); }} catch(e) {{}}
                 }}
+            }})();
+        """)
+
+    if server_data:
+        server_data_json = json.dumps(server_data, separators=(",", ":"))
+        context.add_init_script(f"""
+            (() => {{
+                const snapshot = {server_data_json};
+                window.__backendBootstrap = snapshot;
+                const live = window.SERVER_DATA || {{}};
+                window.SERVER_DATA = Object.assign({{}}, snapshot, live);
+                window.SERVER_DATA.payInfo = Object.assign(
+                    {{}},
+                    snapshot.payInfo || {{}},
+                    live.payInfo || {{}}
+                );
             }})();
         """)
 
@@ -510,12 +830,24 @@ def _close_cached_session(session: _CachedBrowserSession) -> None:
     for obj, method_name in (
         (session.context, "close"),
         (session.browser, "close"),
-        (session.manager, "stop"),
     ):
         try:
             getattr(obj, method_name)()
         except Exception:
             pass
+    try:
+        session.manager.__exit__(None, None, None)
+    except Exception:
+        pass
+
+
+def _stop_playwright_manager(manager) -> None:
+    if manager is None:
+        return
+    try:
+        manager.__exit__(None, None, None)
+    except Exception:
+        pass
 
 
 def _discard_cached_session(session: _CachedBrowserSession) -> None:
@@ -545,15 +877,19 @@ def _create_cached_session(
     sync_playwright, PWTimeout = _get_playwright()
 
     storage_state_path = os.path.abspath(storage_state_path)
-    redeem_url = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
+    redeem_url = (
+        f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
+        "?from=self.midasbuy_saas"
+    )
     session_dir = os.path.dirname(storage_state_path)
-    manager = sync_playwright()
-    p = manager.start()
+    manager = None
     browser = None
     context = None
 
     try:
-        browser, context = _launch_context(p, storage_state_path)
+        manager = sync_playwright()
+        p = manager.start()
+        browser, context = _launch_context(p, storage_state_path, country_code)
         page = context.new_page()
 
         _setup_lightweight_routes(page)
@@ -561,6 +897,12 @@ def _create_cached_session(
 
         logger.info("[CRYPTO] warming cached page %s", redeem_url)
         page.goto(redeem_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            page.wait_for_load_state("load", timeout=20_000)
+        except PWTimeout:
+            logger.warning("[CRYPTO] page load event timed out; continuing with initialized DOM")
+        page.wait_for_timeout(2_000)
+        _restore_server_data_snapshot(page, storage_state_path)
         logger.info("[CRYPTO] cached page ready url=%s", page.url)
 
         if not _wait_for_xmidas(page, session_dir, timeout_ms):
@@ -578,7 +920,7 @@ def _create_cached_session(
             created_at=now,
             last_used=now,
         )
-    except PWTimeout:
+    except Exception:
         logger.exception("[CRYPTO] cached page warm-up timed out")
         if context:
             try:
@@ -595,27 +937,7 @@ def _create_cached_session(
                 browser.close()
             except Exception:
                 pass
-        try:
-            manager.stop()
-        except Exception:
-            pass
-        raise
-    except Exception:
-        logger.exception("[CRYPTO] cached page warm-up failed")
-        if context:
-            try:
-                context.close()
-            except Exception:
-                pass
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
-        try:
-            manager.stop()
-        except Exception:
-            pass
+        _stop_playwright_manager(manager)
         raise
 
 
@@ -668,9 +990,23 @@ def _wait_for_xmidas(page, session_dir: str, timeout_ms: int) -> bool:
 
     if not has_xmidas:
         try:
+            page.wait_for_function(
+                "() => typeof window.xMidas === 'function'",
+                timeout=10_000,
+            )
+            has_xmidas = page.evaluate(
+                "() => typeof window.xMidas === 'function'"
+            )
+            if has_xmidas:
+                logger.info("[CRYPTO] native window.xMidas became ready")
+        except PWTimeout:
+            pass
+
+    if not has_xmidas:
+        try:
             logger.info("[CRYPTO] window.xMidas missing - injecting local Chaos VM")
             with open(_CHAOS_VM_LOCAL_PATH, "r", encoding="utf-8") as f:
-                vm_source = f.read()
+                vm_source = f.read() + _CHAOS_VM_PROTECTION.decode("ascii")
             page.evaluate("(source) => { (0, eval)(source); }", vm_source)
             has_xmidas = page.evaluate("() => typeof window.xMidas === 'function'")
             logger.info("[CRYPTO] local Chaos VM injection xMidas=%s", has_xmidas)
@@ -678,13 +1014,21 @@ def _wait_for_xmidas(page, session_dir: str, timeout_ms: int) -> bool:
             logger.warning("[CRYPTO] local Chaos VM injection failed: %s", exc)
 
     try:
-        page.wait_for_function(
-            "() => typeof window.xMidas === 'function'",
-            timeout=30_000,
-        )
-        logger.info("[CRYPTO] window.xMidas ready")
+        has_xmidas = page.evaluate("() => typeof window.xMidas === 'function'")
     except PWTimeout:
         logger.warning("[CRYPTO] window.xMidas not detected after 30s — JS evaluate will poll")
+
+    if not has_xmidas:
+        try:
+            logger.info("[CRYPTO] transient xMidas disappeared - injecting locked local VM")
+            with open(_CHAOS_VM_LOCAL_PATH, "r", encoding="utf-8") as f:
+                vm_source = f.read() + _CHAOS_VM_PROTECTION.decode("ascii")
+            page.evaluate("(source) => { (0, eval)(source); }", vm_source)
+            has_xmidas = page.evaluate(
+                "() => typeof window.xMidas === 'function'"
+            )
+        except Exception as exc:
+            logger.warning("[CRYPTO] final local Chaos VM injection failed: %s", exc)
 
     try:
         diag = page.evaluate("""
@@ -693,14 +1037,35 @@ def _wait_for_xmidas(page, session_dir: str, timeout_ms: int) -> bool:
                 xMidasToken: !!document.getElementById('xMidasToken')?.value,
                 url:         location.href,
                 readyState:  document.readyState,
+                deviceIdReady: !!(
+                    window.SERVER_DATA?.reportParams?.midasbuyDeviceId ||
+                    window.__Report_INFO?.midasbuyDeviceId ||
+                    /(?:^|; )midasbuyDeviceId=/.test(document.cookie)
+                ),
+                muidReady: !!(
+                    window.SERVER_DATA?.reportParams?.midasuid ||
+                    window.__Report_INFO?.midasuid ||
+                    window.SERVER_DATA?.muid ||
+                    window.SERVER_DATA?.user?.uid ||
+                    window.SERVER_DATA?.payInfo?.midasUser?.uid ||
+                    sessionStorage.getItem('user_login_data')
+                ),
+                uuidReady: /(?:^|; )UUID=/.test(document.cookie),
+                userAgent: navigator.userAgent,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                 midasKeys:   Object.keys(window).filter(k => k.toLowerCase().includes('midas')),
             })
         """)
         logger.info("[CRYPTO] pre-call diag: %s", diag)
+        has_xmidas = diag.get("xMidasType") == "function"
     except Exception as _e:
         logger.warning("[CRYPTO] diag failed: %s", _e)
 
-    return True
+    if not has_xmidas:
+        logger.error("[CRYPTO] window.xMidas is not stable after initialization")
+        _save_debug(page, session_dir, "crypto_unstable_xmidas")
+
+    return has_xmidas
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -722,9 +1087,27 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
         return None
 
     logger.info(
-        "[CRYPTO] ok  status=%s  encrypt_msg_len=%s",
+        "[CRYPTO] ok  status=%s  encrypt_msg_len=%s  full_json_len=%s  "
+        "cgi_len=%s  drm_len=%s  exp_len=%s  pagetoken_len=%s  "
+        "device=%s  muid=%s  ip=%s  drm=%s  exp=%s  verified_players=%s  "
+        "verified_player_applied=%s  "
+        "request_fields=%s  public_fields=%s",
         result.get("status"),
         result.get("encrypt_msg_len"),
+        result.get("full_json_length"),
+        result.get("cgi_extend_length"),
+        result.get("drm_info_length"),
+        result.get("exp_data_length"),
+        result.get("pagetoken_length"),
+        result.get("has_device_id"),
+        result.get("has_muid"),
+        result.get("has_ip_info"),
+        result.get("has_drm_info"),
+        result.get("has_exp_data"),
+        result.get("verified_player_count"),
+        result.get("verified_player_applied"),
+        result.get("request_field_names"),
+        result.get("public_field_names"),
     )
     return result.get("data")
 
@@ -810,7 +1193,7 @@ def call_api_in_browser(
 
     try:
         with sync_playwright() as p:
-            browser, context = _launch_context(p, storage_state_path)
+            browser, context = _launch_context(p, storage_state_path, country_code)
             page = context.new_page()
 
             # Route intercept must be registered BEFORE page.goto
@@ -825,6 +1208,7 @@ def call_api_in_browser(
                 browser.close()
                 return None
 
+            _restore_server_data_snapshot(page, storage_state_path)
             logger.info("[CRYPTO] page loaded  url=%s", page.url)
 
             if not _wait_for_xmidas(page, session_dir, timeout_ms):
@@ -850,437 +1234,6 @@ def call_api_in_browser(
         return None
 
 
-# ── Redeem CAPTCHA solve + retry (free TCaptcha slider solver) ──────────────────
-
-# Main-world script: invoke window.midas.newRiskControl(source) (renders the
-# TCaptcha slider and resolves with {rc_token, rc_uuid} once solved) and write
-# the result to a DOM element the driver can poll.
-_JS_TRIGGER_RISKCONTROL = r"""
-(function(){
-  var me = document.currentScript;
-  var nonce = me && me.getAttribute('data-nonce');
-  function out(o){ var el = document.getElementById('__rc_out_'+nonce); if (el) el.textContent = JSON.stringify(o); }
-  try {
-    var source = JSON.parse(document.getElementById('__rc_in_'+nonce).textContent).source;
-    if (!window.midas || typeof window.midas.newRiskControl !== 'function') { out({error:'no_newRiskControl', midas: typeof window.midas}); return; }
-    window.midas.newRiskControl(source).then(function(tok){ out({ok:true, tok: tok}); })
-      .catch(function(e){ out({error:'rc_rejected', detail: String(e)}); });
-  } catch(e) { out({error:'js_exception', detail: String(e)}); }
-})();
-"""
-
-_SLIDER_SELECTORS = (
-    "#riskControlComponent",
-    "iframe[src*='harvestsharp']",
-    "iframe[src*='slider']",
-    "#tcaptcha_iframe",
-    "iframe[src*='captcha']",
-)
-
-# Context init script: wrap window.TencentCaptcha so we can capture the slider's
-# success callback in the harvestsharp frame and fire it with a paid-solver token
-# (ticket+randstr) — the slider's own code then does the harvestsharp submit and
-# postMessages {rc_token, rc_uuid} back, so we don't have to reverse that hop.
-_JS_TCAPTCHA_HOOK = """
-() => {
-  try {
-    if (window.__tcapHookInstalled) return;
-    window.__tcapHookInstalled = true;
-    var _real = null;
-    function Wrapped() {
-      var args = Array.prototype.slice.call(arguments);
-      for (var i = 0; i < args.length; i++) {
-        if (typeof args[i] === 'function') { window.__tcaptchaCallback = args[i]; break; }
-      }
-      var inst = Object.create(_real.prototype);
-      var r = _real.apply(inst, args);
-      return (r && typeof r === 'object') ? r : inst;
-    }
-    Object.defineProperty(window, 'TencentCaptcha', {
-      configurable: true, enumerable: true,
-      get: function () { return _real ? Wrapped : undefined; },
-      set: function (v) { _real = v; },
-    });
-  } catch (e) {}
-}
-"""
-
-# Solver browser runs headful by default so the slider renders for solving and
-# can be watched/assisted; set MIDASBUY_SOLVER_HEADLESS=1 to force headless.
-_SOLVER_HEADLESS = os.getenv("MIDASBUY_SOLVER_HEADLESS", "").lower() in ("1", "true", "yes", "on")
-# Manual mode: don't auto-drag — wait for the human to solve the slider in the
-# headful window, then capture the token + run the retry (tests the whole
-# downstream pipeline and the real token format).
-_CAPTCHA_MANUAL = os.getenv("MIDASBUY_CAPTCHA_MANUAL", "").lower() in ("1", "true", "yes", "on")
-
-
-def _install_net_capture(page, sink: list, session_dir: Optional[str] = None) -> None:
-    """
-    Dump EVERY request URL (scripts, images, xhr) to captcha_network.txt and log
-    request/response bodies for the captcha config + verify calls — so we get the
-    real puzzle image URLs and the verify token format automatically, without
-    hand-copying from DevTools.
-    """
-    body_hints = ("captcha", "tcaptcha", "cap_union", "harvestsharp", "slider",
-                  "risk", "shelfproto", "redeem", "secondary", "order", "verify", "show")
-    dump_path = os.path.join(session_dir, "captcha_network.txt") if session_dir else None
-
-    def _append(line: str):
-        if not dump_path:
-            return
-        try:
-            with open(dump_path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
-
-    def on_request(req):
-        try:
-            _append(f">> {req.resource_type:9} {req.method:5} {req.url}")
-            u = req.url.lower()
-            if any(h in u for h in body_hints):
-                try:
-                    pd = req.post_data
-                except Exception:
-                    pd = None
-                if pd:
-                    _append(f"   POST_DATA: {pd[:2000]}")
-        except Exception:
-            pass
-
-    def on_resp(resp):
-        try:
-            u = resp.url.lower()
-            if any(h in u for h in body_hints):
-                body = None
-                try:
-                    body = resp.text()
-                except Exception:
-                    body = None
-                sink.append({"status": resp.status, "url": resp.url, "body": (body or "")[:2000]})
-                logger.info("[CAPTCHA] net << %s %s", resp.status, resp.url[:140])
-                _append(f"<< {resp.status} {resp.url}")
-                if body:
-                    _append(f"   RESP: {body[:2000]}")
-                    logger.info("[CAPTCHA] net body=%s", (body or "")[:400])
-        except Exception:
-            pass
-
-    page.on("request", on_request)
-    page.on("response", on_resp)
-
-
-def _keep_open_if_requested(page, session_dir: str) -> None:
-    """
-    If MIDASBUY_CAPTCHA_KEEP_OPEN is set, leave the headful browser open so the
-    user can inspect DevTools / grab JS + network links. Closes early when a
-    `close_captcha.txt` sentinel appears in the session dir, else after a cap.
-    """
-    if os.getenv("MIDASBUY_CAPTCHA_KEEP_OPEN", "").lower() not in ("1", "true", "yes", "on"):
-        return
-    sentinel = os.path.join(session_dir, "close_captcha.txt")
-    max_s = int(os.getenv("MIDASBUY_CAPTCHA_KEEP_OPEN_S", "900"))
-    logger.warning(
-        "[CAPTCHA] keeping browser open up to %ds. Network dump: %s/captcha_network.txt. "
-        "Create %s to close early.", max_s, session_dir, sentinel,
-    )
-    waited = 0
-    while waited < max_s:
-        if os.path.exists(sentinel):
-            try:
-                os.remove(sentinel)
-            except Exception:
-                pass
-            break
-        try:
-            page.wait_for_timeout(1000)
-        except Exception:
-            time.sleep(1)
-        waited += 1
-
-
-def _find_slider_container(page) -> Optional[str]:
-    for sel in _SLIDER_SELECTORS:
-        try:
-            el = page.query_selector(sel)
-            if el:
-                box = el.bounding_box()
-                if box and box["width"] > 40 and box["height"] > 40:
-                    return sel
-        except Exception:
-            continue
-    return None
-
-
-def _inject_provider_token(page, token: dict) -> bool:
-    """
-    Fire the slider's captured TencentCaptcha callback (in whichever frame the
-    hook caught it) with the paid-solver {ticket, randstr}. The slider's own code
-    then performs the harvestsharp submit and postMessages the rc_token back.
-    """
-    js = (
-        "(t) => { try { if (typeof window.__tcaptchaCallback === 'function') "
-        "{ window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr}); return 'ok'; } "
-        "return 'no_cb'; } catch (e) { return 'err:' + e; } }"
-    )
-    for fr in page.frames:
-        try:
-            r = fr.evaluate(js, token)
-            if r == "ok":
-                logger.info("[CAPTCHA] token injected into frame %s", (fr.url or "")[:90])
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def solve_redeem_captcha_and_retry(
-    payload: dict,
-    source: str,
-    storage_state_path: str,
-    country_code: str = "bd",
-    endpoint: str = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
-    timeout_ms: int = 90_000,
-) -> Optional[dict]:
-    """
-    Render the TCaptcha slider via newRiskControl, auto-solve it (free path), then
-    retry the redeem query carrying the captcha token. Runs on its own headful
-    page so lookups are untouched. Saves the slider screenshot + captures the
-    post-solve network so a real run yields ground truth for the retry contract.
-    """
-    from . import captcha_solver
-
-    sync_playwright, PWTimeout = _get_playwright()
-    redeem_url  = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
-    session_dir = os.path.dirname(storage_state_path)
-    network: list = []
-
-    try:
-        with sync_playwright() as p:
-            browser, context = _launch_context(
-                p, storage_state_path, headless=_SOLVER_HEADLESS, bypass_csp=True,
-            )
-            from . import captcha_provider
-            provider_enabled = captcha_provider.is_enabled()
-            if provider_enabled:
-                # Hook TencentCaptcha in every frame so we can inject the token.
-                context.add_init_script(_JS_TCAPTCHA_HOOK)
-                logger.info("[CAPTCHA] paid provider enabled (%s)", os.getenv("CAPTCHA_PROVIDER", "2captcha"))
-            page = context.new_page()
-            _setup_chaos_vm_protection(page)
-            _install_net_capture(page, network, session_dir)
-
-            # Capture the clean TCaptcha puzzle images for accurate gap detection.
-            captcha_imgs: dict = {}
-            def _on_img(resp):
-                try:
-                    if "cap_union_new_getcapbysig" in resp.url:
-                        import re as _re
-                        m = _re.search(r"img_index=(\d+)", resp.url)
-                        idx = m.group(1) if m else str(len(captcha_imgs))
-                        if idx not in captcha_imgs:
-                            b = resp.body()
-                            captcha_imgs[idx] = b
-                            try:
-                                with open(os.path.join(session_dir, f"captcha_getcap_{idx}.png"), "wb") as f:
-                                    f.write(b)
-                            except Exception:
-                                pass
-                            logger.info("[CAPTCHA] captured puzzle image idx=%s bytes=%d", idx, len(b))
-                except Exception:
-                    pass
-            page.on("response", _on_img)
-
-            # Watch the TCaptcha verify result: errorCode 12 == "operation too
-            # often" (IP/frequency penalty). Stop attempting so we don't extend it.
-            vstate = {"freq_penalty": False}
-            def _on_verify(resp):
-                try:
-                    if "cap_union_new_verify" in resp.url:
-                        d = json.loads(resp.text())
-                        if str(d.get("errorCode")) == "12":
-                            vstate["freq_penalty"] = True
-                            logger.error("[CAPTCHA] verify errorCode=12 (operation too often) — Tencent frequency/IP penalty")
-                except Exception:
-                    pass
-            page.on("response", _on_verify)
-
-            logger.info("[CAPTCHA] opening redeem page (headless=%s) for captcha solve", _SOLVER_HEADLESS)
-            try:
-                page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
-            except PWTimeout:
-                browser.close()
-                return {"ok": False, "error": "goto_timeout", "network": network}
-
-            try:
-                page.wait_for_function(
-                    "() => typeof window.midas !== 'undefined' && typeof window.midas.newRiskControl === 'function'",
-                    timeout=30_000,
-                )
-            except Exception:
-                logger.error("[CAPTCHA] window.midas.newRiskControl not available")
-                _save_debug(page, session_dir, "captcha_no_sdk")
-                browser.close()
-                return {"ok": False, "error": "no_newRiskControl", "network": network}
-
-            nonce = os.urandom(8).hex()
-            page.evaluate(
-                """(a) => {
-                    const inEl = document.createElement('div');
-                    inEl.id = '__rc_in_' + a.nonce; inEl.style.display = 'none';
-                    inEl.textContent = JSON.stringify({source: a.source});
-                    document.documentElement.appendChild(inEl);
-                    const outEl = document.createElement('div');
-                    outEl.id = '__rc_out_' + a.nonce; outEl.style.display = 'none';
-                    document.documentElement.appendChild(outEl);
-                    const s = document.createElement('script');
-                    s.setAttribute('data-nonce', a.nonce);
-                    s.textContent = a.code;
-                    document.documentElement.appendChild(s);
-                }""",
-                {"nonce": nonce, "source": source, "code": _JS_TRIGGER_RISKCONTROL},
-            )
-
-            # Paid provider: solve off-box and get {ticket, randstr} up front.
-            provider_token = None
-            provider_injected = False
-            if provider_enabled:
-                provider_token = captcha_provider.solve_tencent(redeem_url)
-                if provider_token and provider_token.get("ticket"):
-                    logger.info("[CAPTCHA] provider token acquired (randstr=%s)", provider_token.get("randstr"))
-                else:
-                    logger.error("[CAPTCHA] provider returned no usable token: %s", provider_token)
-
-            token = None
-            # Give a human time to solve in manual mode.
-            deadline = time.time() + (max(timeout_ms / 1000.0, 240) if _CAPTCHA_MANUAL else timeout_ms / 1000.0)
-            attempts = 0
-            max_attempts = int(os.getenv("MIDASBUY_CAPTCHA_MAX_ATTEMPTS", "2"))
-            diag_done = False
-            if _CAPTCHA_MANUAL:
-                logger.warning("[CAPTCHA] MANUAL mode — solve the slider in the browser window; waiting...")
-
-            def _poll_token():
-                out = page.evaluate(
-                    "(n) => { const el = document.getElementById('__rc_out_' + n); return el && el.textContent ? el.textContent : null; }",
-                    nonce,
-                )
-                return json.loads(out) if out else None
-
-            while time.time() < deadline:
-                if vstate["freq_penalty"]:
-                    logger.error("[CAPTCHA] aborting: Tencent frequency penalty (errorCode 12). "
-                                 "Stop retrying for a while or use a different IP / paid solver.")
-                    _keep_open_if_requested(page, session_dir)
-                    browser.close()
-                    return {"ok": False, "error": "frequency_penalty", "network": network}
-                res = _poll_token()
-                if res:
-                    if res.get("ok"):
-                        token = res.get("tok")
-                        logger.info("[CAPTCHA] newRiskControl resolved: %s", json.dumps(token))
-                        break
-                    if res.get("error"):
-                        logger.warning("[CAPTCHA] newRiskControl error: %s", res)
-                        break
-
-                sel = _find_slider_container(page)
-                if not sel:
-                    page.wait_for_timeout(500)
-                    continue
-
-                if provider_enabled:
-                    # Inject the paid-solver token into the slider's TCaptcha
-                    # callback; the slider then submits to harvestsharp itself.
-                    if provider_token and provider_token.get("ticket") and not provider_injected:
-                        if _inject_provider_token(page, provider_token):
-                            provider_injected = True
-                            logger.info("[CAPTCHA] provider token injected; waiting for rc_token")
-                        else:
-                            logger.info("[CAPTCHA] TencentCaptcha callback not captured yet; waiting...")
-                    page.wait_for_timeout(1000)
-                    continue
-
-                if _CAPTCHA_MANUAL:
-                    # Don't drag — just save a gap-detection diagnostic once, then
-                    # wait for the human to solve it.
-                    if not diag_done and captcha_imgs.get("1"):
-                        try:
-                            captcha_solver.detect_gap_offset(
-                                captcha_imgs["1"],
-                                save_debug_path=os.path.join(session_dir, "captcha_bg_1.png"),
-                            )
-                        except Exception:
-                            pass
-                        diag_done = True
-                    page.wait_for_timeout(1000)
-                    continue
-
-                if attempts >= max_attempts:
-                    # Don't keep dragging — that's what triggers "Operation too
-                    # often". Just wait for the pending verify to resolve.
-                    page.wait_for_timeout(1000)
-                    continue
-
-                attempts += 1
-                # Human settle before grabbing the handle (instant drags look botty
-                # and rapid retries get rate-limited).
-                page.wait_for_timeout(random.randint(1300, 2600))
-                logger.info("[CAPTCHA] slider visible (%s), solve attempt %d/%d", sel, attempts, max_attempts)
-                bg = captcha_imgs.get("1") or captcha_imgs.get("0")
-                if bg:
-                    scale = float(os.getenv("MIDASBUY_CAPTCHA_SCALE", "0.5"))
-                    x_off = int(os.getenv("MIDASBUY_CAPTCHA_X_OFFSET", "0"))
-                    captcha_solver.solve_from_clean_bg(page, sel, bg, session_dir, scale, x_off, attempts)
-                else:
-                    captcha_solver.solve_slider_in_container(page, sel, session_dir, attempt=attempts)
-
-                # Wait for this attempt's verify result before trying again.
-                waited = 0
-                while waited < 9000 and time.time() < deadline:
-                    res = _poll_token()
-                    if res:
-                        break
-                    page.wait_for_timeout(500)
-                    waited += 500
-                if not token and attempts < max_attempts:
-                    # Back off well before the next attempt to avoid the frequency cap.
-                    page.wait_for_timeout(random.randint(4000, 6500))
-
-            _save_debug(page, session_dir, "captcha_after_solve")
-
-            if not token:
-                logger.error("[CAPTCHA] no token obtained (attempts=%d)", attempts)
-                _keep_open_if_requested(page, session_dir)
-                browser.close()
-                return {"ok": False, "error": "captcha_unsolved", "attempts": attempts, "network": network}
-
-            rc_token = (token or {}).get("rc_token") or (token or {}).get("ticket")
-            rc_uuid  = (token or {}).get("rc_uuid")
-            retry_payload = dict(payload)
-            retry_payload["rc_token"] = rc_token
-            retry_payload["rc_uuid"]  = rc_uuid
-            retry_payload["verifyData"] = {"ticket": rc_token, "randstr": rc_uuid}
-
-            logger.info("[CAPTCHA] retrying query with captcha token")
-            retry = page.evaluate(_JS_CALL_API, {
-                "payloadJson": json.dumps(retry_payload, separators=(",", ":")),
-                "endpoint":    endpoint,
-                "method":      "POST",
-            })
-            _save_debug(page, session_dir, "captcha_retry_done")
-            _keep_open_if_requested(page, session_dir)
-            browser.close()
-
-            data = (retry or {}).get("data") if isinstance(retry, dict) else None
-            logger.info("[CAPTCHA] retry result ret=%s", (data or {}).get("ret") if isinstance(data, dict) else "n/a")
-            return {"ok": True, "token": token, "retry": retry, "data": data, "network": network}
-
-    except Exception:
-        logger.exception("[CAPTCHA] solve_redeem_captcha_and_retry crashed")
-        return {"ok": False, "error": "exception", "network": network}
-
-
 def get_browser_payload(
     payload: dict,
     storage_state_path: str,
@@ -1295,7 +1248,7 @@ def get_browser_payload(
 
     try:
         with sync_playwright() as p:
-            browser, context = _launch_context(p, storage_state_path)
+            browser, context = _launch_context(p, storage_state_path, country_code)
             page = context.new_page()
 
             _setup_chaos_vm_protection(page)
@@ -1309,6 +1262,7 @@ def get_browser_payload(
                 browser.close()
                 return None
 
+            _restore_server_data_snapshot(page, storage_state_path)
             if not _wait_for_xmidas(page, session_dir, timeout_ms):
                 browser.close()
                 return None
