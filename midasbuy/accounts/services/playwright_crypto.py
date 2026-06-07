@@ -1413,7 +1413,9 @@ def _rc_inject_token(page, token: dict) -> bool:
     body = (
         "var t = JSON.parse(DATA);"
         "if (typeof window.__tcaptchaCallback === 'function') {"
-        "  window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr, appid: t.appid});"
+        "  window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr,"
+        "    CaptchaAppId: t.appid, appid: t.appid, errorCode: 0, errorMessage: 'OK',"
+        "    verifyDuration: 1200, actionDuration: 1000, sid: ''});"
         "  return 'ok';"
         "} return 'no_cb';"
     )
@@ -1497,7 +1499,7 @@ def obtain_rc_token_via_provider(
     challenge_url: str,
     storage_state_path: str,
     country_code: str = "bd",
-    timeout_ms: int = 120_000,
+    timeout_ms: int = 75_000,
 ) -> Optional[dict]:
     """
     Produce {rc_token, rc_uuid} for a graphic risk-control challenge using the
@@ -1521,6 +1523,25 @@ def obtain_rc_token_via_provider(
             page = context.new_page()
             _setup_chaos_vm_protection(page)
             _setup_tcaptcha_hook_route(page)
+
+            # Capture the post-callback traffic (PAValidate / Tencent verify) so we
+            # can see whether/why the ticket is accepted.
+            def _on_resp(resp):
+                try:
+                    u = resp.url.lower()
+                    if any(h in u for h in ("pavalidate", "paenroll", "paidentify",
+                                            "cap_union_new_verify", "/v1/rc/3ds/", "secondary")):
+                        body = None
+                        try:
+                            body = resp.text()
+                        except Exception:
+                            body = None
+                        logger.info("[CAPTCHA][NET] %s %s", resp.status, resp.url[:130])
+                        if body:
+                            logger.info("[CAPTCHA][NET] body=%s", (body or "")[:600])
+                except Exception:
+                    pass
+            page.on("response", _on_resp)
 
             logger.info("[CAPTCHA] obtaining rc_token via provider (challenge ready)")
             try:
