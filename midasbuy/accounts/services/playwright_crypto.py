@@ -1618,9 +1618,10 @@ def obtain_rc_token_via_provider(
                 {"nonce": nonce, "challenge": challenge_url, "code": _JS_TRIGGER_RC},
             )
 
-            # Wait for the slider to render, then solve off-box and inject.
-            for _ in range(40):
-                if _rc_slider_present(page):
+            # Wait for the slider frame to render (we POST CommonCheck from inside
+            # it so the request carries the harvestsharp cookies + origin).
+            for _ in range(60):
+                if _rc_find_slider_frame(page) is not None:
                     break
                 page.wait_for_timeout(250)
 
@@ -1630,44 +1631,22 @@ def obtain_rc_token_via_provider(
                 _save_debug(page, session_dir, "rc_no_token")
                 browser.close()
                 return None
-            logger.info("[CAPTCHA] provider token acquired; injecting")
+            logger.info("[CAPTCHA] provider token acquired; submitting CommonCheck")
 
-            def _poll_rc():
-                raw = page.evaluate(
-                    "(n) => { const el = document.getElementById('__rc_out_' + n); return el && el.textContent ? el.textContent : null; }",
-                    nonce,
-                )
-                return json.loads(raw) if raw else None
-
-            injected = False
-            deadline = time.time() + timeout_ms / 1000.0
+            import re as _re
+            m = _re.search(r"rc_uuid=([^&]+)", challenge_url)
+            rc_uuid = m.group(1) if m else None
             result = None
-            inject_deadline = time.time() + 30  # stop retrying the hook after 30s
-            warned = False
-            diag_done = False
-            while time.time() < deadline:
-                res = _poll_rc()
-                if res:
-                    if res.get("ok") and res.get("rc_token") and res.get("rc_uuid"):
-                        result = {"rc_token": res["rc_token"], "rc_uuid": res["rc_uuid"]}
-                        logger.info("[CAPTCHA] rc_token obtained")
-                        break
-                    if res.get("error"):
-                        logger.warning("[CAPTCHA] newRiskControl error: %s", res)
-                        break
-                if not injected and _rc_slider_present(page):
-                    if _rc_inject_token(page, token):
-                        injected = True
-                        logger.info("[CAPTCHA] token injected; waiting for rc_token")
-                    elif not warned:
-                        warned = True
-                        logger.info("[CAPTCHA] TencentCaptcha callback not captured yet; waiting...")
-                if not injected and not diag_done and time.time() > inject_deadline:
-                    diag_done = True
-                    _rc_log_frame_diagnostics(page)
-                    logger.error("[CAPTCHA] could not hand the token to the slider — see diagnostics above")
-                    break
-                page.wait_for_timeout(750)
+            if rc_uuid:
+                resp = _rc_submit_commoncheck(page, rc_uuid, token, timeout_s=30)
+                result = _rc_extract_token(resp, rc_uuid)
+                if result:
+                    logger.info("[CAPTCHA] rc_token obtained via CommonCheck")
+                else:
+                    logger.warning("[CAPTCHA] CommonCheck did not yield rc_token: %s",
+                                   json.dumps(resp)[:400] if resp else resp)
+            else:
+                logger.error("[CAPTCHA] could not parse rc_uuid from challenge url")
 
             if result is None:
                 _save_debug(page, session_dir, "rc_unresolved")
@@ -1677,6 +1656,83 @@ def obtain_rc_token_via_provider(
     except Exception:
         logger.exception("[CAPTCHA] obtain_rc_token_via_provider crashed")
         return None
+
+
+def _rc_find_slider_frame(page):
+    for fr in page.frames:
+        u = fr.url or ""
+        if "harvestsharp" in u and ("slider" in u or "/rc/3ds/" in u):
+            return fr
+    return None
+
+
+def _rc_extract_token(resp, rc_uuid: str):
+    """Pull {rc_token, rc_uuid} out of a CommonCheck response (flat or under .data)."""
+    if not isinstance(resp, dict):
+        return None
+    for obj in (resp, resp.get("data") if isinstance(resp.get("data"), dict) else {}):
+        if isinstance(obj, dict) and obj.get("rc_token"):
+            return {"rc_token": obj["rc_token"], "rc_uuid": obj.get("rc_uuid") or rc_uuid}
+    return None
+
+
+def _rc_submit_commoncheck(page, rc_uuid: str, token: dict, timeout_s: int = 30):
+    """
+    POST CommonCheck inside the harvestsharp slider frame (same origin → cookies)
+    with the paid-solver ticket, and return the parsed JSON response.
+
+        POST /v1/rc/3ds/api/trpc.tdrc.rc_verification_go.Verification/CommonCheck
+        {rc_uuid, ticket, rand_str, verify_state:"0", verify_type:"graphic"}
+    """
+    fr = _rc_find_slider_frame(page)
+    if fr is None:
+        logger.warning("[CAPTCHA] no harvestsharp slider frame for CommonCheck")
+        return None
+
+    rid = "__cc_" + os.urandom(5).hex()
+    body = {
+        "rc_uuid": rc_uuid,
+        "ticket": token.get("ticket"),
+        "rand_str": token.get("randstr"),
+        "verify_state": "0",
+        "verify_type": "graphic",
+    }
+    fr.evaluate(
+        """(a) => {
+            const r = document.createElement('div');
+            r.id = a.rid; r.style.display = 'none';
+            r.setAttribute('data-body', a.body);
+            document.documentElement.appendChild(r);
+            const s = document.createElement('script');
+            s.textContent =
+                '(function(){var el=document.getElementById("' + a.rid + '");' +
+                'fetch("/v1/rc/3ds/api/trpc.tdrc.rc_verification_go.Verification/CommonCheck",' +
+                '{method:"POST",headers:{"content-type":"application/json"},credentials:"include",' +
+                'body:el.getAttribute("data-body")})' +
+                '.then(function(x){return x.text();})' +
+                '.then(function(b){el.textContent=b||"{}";})' +
+                '.catch(function(e){el.textContent=JSON.stringify({__err:String(e)});});})();';
+            document.documentElement.appendChild(s);
+            s.remove();
+        }""",
+        {"rid": rid, "body": json.dumps(body)},
+    )
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        raw = fr.evaluate(
+            "(rid) => { const r = document.getElementById(rid); return r ? r.textContent : null; }",
+            rid,
+        )
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                logger.warning("[CAPTCHA] CommonCheck non-JSON response: %s", raw[:300])
+                return None
+        page.wait_for_timeout(500)
+    logger.warning("[CAPTCHA] CommonCheck timed out")
+    return None
 
 
 def _rc_log_frame_diagnostics(page) -> None:
