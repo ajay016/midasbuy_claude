@@ -2,6 +2,14 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load .env so CAPTCHA_API_KEY / CAPTCHA_PROVIDER / MIDASBUY_* are visible to
+# os.getenv() (nothing reads .env otherwise).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / ".env")
+except Exception:
+    pass
+
 SECRET_KEY = "django-insecure-change-this-in-production-use-env-var"
 
 DEBUG = True

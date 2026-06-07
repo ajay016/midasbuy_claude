@@ -877,6 +877,34 @@ _SLIDER_SELECTORS = (
     "iframe[src*='captcha']",
 )
 
+# Context init script: wrap window.TencentCaptcha so we can capture the slider's
+# success callback in the harvestsharp frame and fire it with a paid-solver token
+# (ticket+randstr) — the slider's own code then does the harvestsharp submit and
+# postMessages {rc_token, rc_uuid} back, so we don't have to reverse that hop.
+_JS_TCAPTCHA_HOOK = """
+() => {
+  try {
+    if (window.__tcapHookInstalled) return;
+    window.__tcapHookInstalled = true;
+    var _real = null;
+    function Wrapped() {
+      var args = Array.prototype.slice.call(arguments);
+      for (var i = 0; i < args.length; i++) {
+        if (typeof args[i] === 'function') { window.__tcaptchaCallback = args[i]; break; }
+      }
+      var inst = Object.create(_real.prototype);
+      var r = _real.apply(inst, args);
+      return (r && typeof r === 'object') ? r : inst;
+    }
+    Object.defineProperty(window, 'TencentCaptcha', {
+      configurable: true, enumerable: true,
+      get: function () { return _real ? Wrapped : undefined; },
+      set: function (v) { _real = v; },
+    });
+  } catch (e) {}
+}
+"""
+
 # Solver browser runs headful by default so the slider renders for solving and
 # can be watched/assisted; set MIDASBUY_SOLVER_HEADLESS=1 to force headless.
 _SOLVER_HEADLESS = os.getenv("MIDASBUY_SOLVER_HEADLESS", "").lower() in ("1", "true", "yes", "on")
@@ -984,6 +1012,28 @@ def _find_slider_container(page) -> Optional[str]:
     return None
 
 
+def _inject_provider_token(page, token: dict) -> bool:
+    """
+    Fire the slider's captured TencentCaptcha callback (in whichever frame the
+    hook caught it) with the paid-solver {ticket, randstr}. The slider's own code
+    then performs the harvestsharp submit and postMessages the rc_token back.
+    """
+    js = (
+        "(t) => { try { if (typeof window.__tcaptchaCallback === 'function') "
+        "{ window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr}); return 'ok'; } "
+        "return 'no_cb'; } catch (e) { return 'err:' + e; } }"
+    )
+    for fr in page.frames:
+        try:
+            r = fr.evaluate(js, token)
+            if r == "ok":
+                logger.info("[CAPTCHA] token injected into frame %s", (fr.url or "")[:90])
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def solve_redeem_captcha_and_retry(
     payload: dict,
     source: str,
@@ -1010,6 +1060,12 @@ def solve_redeem_captcha_and_retry(
             browser, context = _launch_context(
                 p, storage_state_path, headless=_SOLVER_HEADLESS, bypass_csp=True,
             )
+            from . import captcha_provider
+            provider_enabled = captcha_provider.is_enabled()
+            if provider_enabled:
+                # Hook TencentCaptcha in every frame so we can inject the token.
+                context.add_init_script(_JS_TCAPTCHA_HOOK)
+                logger.info("[CAPTCHA] paid provider enabled (%s)", os.getenv("CAPTCHA_PROVIDER", "2captcha"))
             page = context.new_page()
             _setup_chaos_vm_protection(page)
             _install_net_capture(page, network, session_dir)
@@ -1085,6 +1141,16 @@ def solve_redeem_captcha_and_retry(
                 {"nonce": nonce, "source": source, "code": _JS_TRIGGER_RISKCONTROL},
             )
 
+            # Paid provider: solve off-box and get {ticket, randstr} up front.
+            provider_token = None
+            provider_injected = False
+            if provider_enabled:
+                provider_token = captcha_provider.solve_tencent(redeem_url)
+                if provider_token and provider_token.get("ticket"):
+                    logger.info("[CAPTCHA] provider token acquired (randstr=%s)", provider_token.get("randstr"))
+                else:
+                    logger.error("[CAPTCHA] provider returned no usable token: %s", provider_token)
+
             token = None
             # Give a human time to solve in manual mode.
             deadline = time.time() + (max(timeout_ms / 1000.0, 240) if _CAPTCHA_MANUAL else timeout_ms / 1000.0)
@@ -1121,6 +1187,18 @@ def solve_redeem_captcha_and_retry(
                 sel = _find_slider_container(page)
                 if not sel:
                     page.wait_for_timeout(500)
+                    continue
+
+                if provider_enabled:
+                    # Inject the paid-solver token into the slider's TCaptcha
+                    # callback; the slider then submits to harvestsharp itself.
+                    if provider_token and provider_token.get("ticket") and not provider_injected:
+                        if _inject_provider_token(page, provider_token):
+                            provider_injected = True
+                            logger.info("[CAPTCHA] provider token injected; waiting for rc_token")
+                        else:
+                            logger.info("[CAPTCHA] TencentCaptcha callback not captured yet; waiting...")
+                    page.wait_for_timeout(1000)
                     continue
 
                 if _CAPTCHA_MANUAL:
