@@ -1440,6 +1440,59 @@ def _rc_slider_present(page) -> bool:
     return False
 
 
+# Appended to TCaptcha-global.js (served via page.route) so window.TencentCaptcha
+# is wrapped before the slider calls it — captures the success callback into
+# window.__tcaptchaCallback even in the cross-origin iframe add_init_script misses.
+_TCAPTCHA_WRAP = b"""
+;(function(){
+  function wrap(_real){
+    function W(){
+      var args=[].slice.call(arguments);
+      for(var i=0;i<args.length;i++){
+        var a=args[i];
+        if(typeof a==='function'){window.__tcaptchaCallback=a;}
+        else if(a&&typeof a==='object'){for(var k in a){try{if(typeof a[k]==='function'&&/call|cb|verif|success|done|ready/i.test(k)){window.__tcaptchaCallback=a[k];}}catch(e){}}}
+      }
+      try{return new (Function.prototype.bind.apply(_real,[null].concat(args)))();}
+      catch(e){var o=Object.create(_real.prototype);try{_real.apply(o,args);}catch(e2){}return o;}
+    }
+    try{for(var k in _real){try{W[k]=_real[k];}catch(e){}}}catch(e){}
+    try{W.prototype=_real.prototype;}catch(e){}
+    return W;
+  }
+  try{
+    var cur=window.TencentCaptcha;
+    if(typeof cur==='function'){window.TencentCaptcha=wrap(cur);window.__tcapHookInstalled=true;}
+    else{
+      var _w=null;
+      Object.defineProperty(window,'TencentCaptcha',{configurable:true,enumerable:true,
+        get:function(){return _w;},
+        set:function(v){_w=(typeof v==='function')?wrap(v):v;window.__tcapHookInstalled=true;}});
+    }
+  }catch(e){}
+})();
+"""
+
+
+def _setup_tcaptcha_hook_route(page) -> None:
+    def handle(route):
+        try:
+            resp = route.fetch()
+            headers = dict(resp.headers)
+            headers.pop("content-length", None)
+            headers["content-type"] = "application/javascript; charset=utf-8"
+            route.fulfill(status=resp.status, headers=headers, body=resp.body() + _TCAPTCHA_WRAP)
+            logger.info("[CAPTCHA] TCaptcha-global.js hook injected via route")
+        except Exception as exc:
+            logger.warning("[CAPTCHA] TCaptcha route hook failed (%s) — continuing", exc)
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+    page.route("**TCaptcha-global*", handle)
+
+
 def obtain_rc_token_via_provider(
     challenge_url: str,
     storage_state_path: str,
@@ -1467,6 +1520,7 @@ def obtain_rc_token_via_provider(
             context.add_init_script(_JS_TCAPTCHA_HOOK)
             page = context.new_page()
             _setup_chaos_vm_protection(page)
+            _setup_tcaptcha_hook_route(page)
 
             logger.info("[CAPTCHA] obtaining rc_token via provider (challenge ready)")
             try:
