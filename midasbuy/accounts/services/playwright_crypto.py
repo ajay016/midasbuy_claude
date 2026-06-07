@@ -735,7 +735,7 @@ def _restore_server_data_snapshot(page, storage_state_path: str) -> None:
         logger.warning("[CRYPTO] SERVER_DATA snapshot restore failed: %s", exc)
 
 
-def _launch_context(p, storage_state_path: str, country_code: str):
+def _launch_context(p, storage_state_path: str, country_code: str, bypass_csp: bool = False):
     from django.conf import settings
 
     ss_data = _load_session_storage(storage_state_path)
@@ -767,6 +767,7 @@ def _launch_context(p, storage_state_path: str, country_code: str):
         viewport=getattr(settings, "MIDASBUY_BROWSER_VIEWPORT", {"width": 1440, "height": 900}),
         locale="en-US",
         timezone_id=timezone_by_country.get(country_code.lower(), "UTC"),
+        bypass_csp=bypass_csp,
     )
 
     context.add_init_script(_STEALTH_JS)
@@ -1308,3 +1309,205 @@ def _save_debug(page, session_dir: str, name: str) -> None:
         logger.info("[CRYPTO] debug artifacts saved: %s/%s.*", session_dir, name)
     except Exception as e:
         logger.debug("[CRYPTO] could not save debug artifacts: %s", e)
+
+
+# ── Captcha auto-solve: obtain rc_token / rc_uuid via a paid provider ────────────
+#
+# Replaces the manual slider solve. Drives window.midas.newRiskControl(challenge)
+# headlessly, hooks window.TencentCaptcha in every frame to capture the slider's
+# success callback, solves the TCaptcha off-box via 2Captcha, fires the callback
+# with {ticket, randstr} inside the (cross-origin) harvestsharp slider frame —
+# the slider then submits to harvestsharp itself and newRiskControl resolves with
+# {rc_token, rc_uuid}, which the backend feeds into QueryRedeemCodeInfo.
+
+_JS_TCAPTCHA_HOOK = r"""
+() => {
+  try {
+    if (window.__tcapHookInstalled) return;
+    window.__tcapHookInstalled = true;
+    var _real = null;
+    function Wrapped() {
+      var args = Array.prototype.slice.call(arguments);
+      for (var i = 0; i < args.length; i++) {
+        if (typeof args[i] === 'function') { window.__tcaptchaCallback = args[i]; break; }
+      }
+      var inst = Object.create(_real.prototype);
+      var r = _real.apply(inst, args);
+      return (r && typeof r === 'object') ? r : inst;
+    }
+    Object.defineProperty(window, 'TencentCaptcha', {
+      configurable: true, enumerable: true,
+      get: function () { return _real ? Wrapped : undefined; },
+      set: function (v) { _real = v; },
+    });
+  } catch (e) {}
+}
+"""
+
+_JS_TRIGGER_RC = r"""
+(function(){
+  var me = document.currentScript;
+  var nonce = me && me.getAttribute('data-nonce');
+  function out(o){ var el = document.getElementById('__rc_out_'+nonce); if (el) el.textContent = JSON.stringify(o); }
+  try {
+    var challenge = JSON.parse(document.getElementById('__rc_in_'+nonce).textContent).challenge;
+    if (!window.midas || typeof window.midas.newRiskControl !== 'function') { out({error:'no_newRiskControl', midas: typeof window.midas}); return; }
+    window.midas.newRiskControl(challenge).then(function(r){
+      out({ok:true, rc_token: r && r.rc_token, rc_uuid: r && r.rc_uuid});
+    }).catch(function(e){ out({error:'rc_rejected', detail: String(e)}); });
+  } catch(e) { out({error:'js_exception', detail: String(e)}); }
+})();
+"""
+
+_RC_SLIDER_SELECTORS = (
+    "#riskControlComponent",
+    "iframe[src*='harvestsharp']",
+    "iframe[src*='slider']",
+    "iframe[src*='captcha']",
+)
+
+
+def _rc_inject_token(page, token: dict) -> bool:
+    js = (
+        "(t) => { try { if (typeof window.__tcaptchaCallback === 'function') "
+        "{ window.__tcaptchaCallback({ret: 0, ticket: t.ticket, randstr: t.randstr, appid: t.appid}); return 'ok'; } "
+        "return 'no_cb'; } catch (e) { return 'err:' + e; } }"
+    )
+    for fr in page.frames:
+        try:
+            if fr.evaluate(js, token) == "ok":
+                logger.info("[CAPTCHA] token injected into frame %s", (fr.url or "")[:90])
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _rc_slider_present(page) -> bool:
+    for sel in _RC_SLIDER_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el:
+                box = el.bounding_box()
+                if box and box["width"] > 30 and box["height"] > 30:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def obtain_rc_token_via_provider(
+    challenge_url: str,
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 120_000,
+) -> Optional[dict]:
+    """
+    Produce {rc_token, rc_uuid} for a graphic risk-control challenge using the
+    configured paid solver. Returns None if no provider key, solve fails, or the
+    challenge does not resolve. Runs its own browser (call from a dedicated
+    thread, not the cached-session executor).
+    """
+    from . import captcha_provider
+
+    if not captcha_provider.is_enabled():
+        return None
+
+    sync_playwright, PWTimeout = _get_playwright()
+    redeem_url = f"https://www.midasbuy.com/midasbuy/{country_code}/redeem/pubgm"
+    session_dir = os.path.dirname(storage_state_path)
+
+    try:
+        with sync_playwright() as p:
+            browser, context = _launch_context(p, storage_state_path, country_code, bypass_csp=True)
+            context.add_init_script(_JS_TCAPTCHA_HOOK)
+            page = context.new_page()
+            _setup_chaos_vm_protection(page)
+
+            logger.info("[CAPTCHA] obtaining rc_token via provider (challenge ready)")
+            try:
+                page.goto(redeem_url, wait_until="load", timeout=timeout_ms)
+            except PWTimeout:
+                logger.error("[CAPTCHA] page.goto timed out")
+                browser.close()
+                return None
+
+            try:
+                page.wait_for_function(
+                    "() => window.midas && typeof window.midas.newRiskControl === 'function'",
+                    timeout=40_000,
+                )
+            except Exception:
+                logger.error("[CAPTCHA] window.midas.newRiskControl not available")
+                _save_debug(page, session_dir, "rc_no_sdk")
+                browser.close()
+                return None
+
+            # Trigger newRiskControl in the page main world.
+            nonce = os.urandom(8).hex()
+            page.evaluate(
+                """(a) => {
+                    const inEl = document.createElement('div');
+                    inEl.id = '__rc_in_' + a.nonce; inEl.style.display = 'none';
+                    inEl.textContent = JSON.stringify({challenge: a.challenge});
+                    document.documentElement.appendChild(inEl);
+                    const outEl = document.createElement('div');
+                    outEl.id = '__rc_out_' + a.nonce; outEl.style.display = 'none';
+                    document.documentElement.appendChild(outEl);
+                    const s = document.createElement('script');
+                    s.setAttribute('data-nonce', a.nonce);
+                    s.textContent = a.code;
+                    document.documentElement.appendChild(s);
+                }""",
+                {"nonce": nonce, "challenge": challenge_url, "code": _JS_TRIGGER_RC},
+            )
+
+            # Wait for the slider to render, then solve off-box and inject.
+            for _ in range(40):
+                if _rc_slider_present(page):
+                    break
+                page.wait_for_timeout(250)
+
+            token = captcha_provider.solve_tencent(redeem_url)
+            if not token or not token.get("ticket"):
+                logger.error("[CAPTCHA] provider returned no token: %s", token)
+                _save_debug(page, session_dir, "rc_no_token")
+                browser.close()
+                return None
+            logger.info("[CAPTCHA] provider token acquired; injecting")
+
+            def _poll_rc():
+                raw = page.evaluate(
+                    "(n) => { const el = document.getElementById('__rc_out_' + n); return el && el.textContent ? el.textContent : null; }",
+                    nonce,
+                )
+                return json.loads(raw) if raw else None
+
+            injected = False
+            deadline = time.time() + timeout_ms / 1000.0
+            result = None
+            while time.time() < deadline:
+                res = _poll_rc()
+                if res:
+                    if res.get("ok") and res.get("rc_token") and res.get("rc_uuid"):
+                        result = {"rc_token": res["rc_token"], "rc_uuid": res["rc_uuid"]}
+                        logger.info("[CAPTCHA] rc_token obtained")
+                        break
+                    if res.get("error"):
+                        logger.warning("[CAPTCHA] newRiskControl error: %s", res)
+                        break
+                if not injected and _rc_slider_present(page):
+                    if _rc_inject_token(page, token):
+                        injected = True
+                    else:
+                        logger.info("[CAPTCHA] TencentCaptcha callback not captured yet; waiting...")
+                page.wait_for_timeout(750)
+
+            if result is None:
+                _save_debug(page, session_dir, "rc_unresolved")
+            browser.close()
+            return result
+
+    except Exception:
+        logger.exception("[CAPTCHA] obtain_rc_token_via_provider crashed")
+        return None

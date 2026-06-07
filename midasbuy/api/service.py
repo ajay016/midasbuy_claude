@@ -22,7 +22,15 @@ logger = logging.getLogger(__name__)
 _APPID = "1450015065"
 _PF    = "mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas"
 _BROWSER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-browser")
+# Separate thread for the captcha solver — it spins up its own sync_playwright,
+# which must not share a thread with the cached session's live Playwright loop.
+_SOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-captcha")
 _QUERY_REDEEM_ENDPOINT = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo"
+
+
+async def _run_solver_call(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_SOLVER_EXECUTOR, _run_browser_call_sync, func, args)
 
 
 def _run_browser_call_sync(func, args):
@@ -50,6 +58,7 @@ async def shutdown_browser_worker() -> None:
         (),
     )
     _BROWSER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    _SOLVER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 def _looks_like_encrypt_error(data: Optional[dict]) -> bool:
@@ -307,6 +316,28 @@ async def query_code_info(
     if ret != 0:
         challenge_type, challenge_url = _extract_risk_challenge(data)
         if challenge_type == "graphic" and challenge_url:
+            # Auto-solve via the paid provider when configured (and we haven't
+            # already supplied a token). Falls back to the frontend manual flow.
+            if not rc_token:
+                try:
+                    from accounts.services.captcha_provider import is_enabled as _captcha_enabled
+                    from accounts.services.playwright_crypto import obtain_rc_token_via_provider
+                except Exception:
+                    _captcha_enabled = lambda: False  # noqa: E731
+                if _captcha_enabled():
+                    logger.info("[REDEEM] graphic risk control — auto-solving via provider")
+                    rc = await _run_solver_call(
+                        obtain_rc_token_via_provider,
+                        challenge_url, storage_state_path, country_code,
+                    )
+                    if rc and rc.get("rc_token") and rc.get("rc_uuid"):
+                        logger.info("[REDEEM] provider produced rc_token — retrying query")
+                        return await query_code_info(
+                            player_id, pin_code, country_code, storage_state_path,
+                            cookies, zone_id, rc["rc_token"], rc["rc_uuid"],
+                        )
+                    logger.warning("[REDEEM] provider did not produce rc_token — falling back to manual")
+
             return RedeemResponse(
                 success=False,
                 message="Security verification is required to continue.",
