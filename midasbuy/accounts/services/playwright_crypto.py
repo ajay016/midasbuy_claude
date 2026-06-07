@@ -1325,15 +1325,24 @@ _JS_TCAPTCHA_HOOK = r"""
   try {
     if (window.__tcapHookInstalled) return;
     window.__tcapHookInstalled = true;
+    function _grab(args) {
+      for (var i = 0; i < args.length; i++) {
+        var a = args[i];
+        if (typeof a === 'function') { window.__tcaptchaCallback = a; return; }
+        if (a && typeof a === 'object') {
+          for (var k in a) {
+            try { if (typeof a[k] === 'function' && /call|cb|verif|success|done|ready/i.test(k)) { window.__tcaptchaCallback = a[k]; return; } } catch(e) {}
+          }
+        }
+      }
+    }
     var _real = null;
     function Wrapped() {
       var args = Array.prototype.slice.call(arguments);
-      for (var i = 0; i < args.length; i++) {
-        if (typeof args[i] === 'function') { window.__tcaptchaCallback = args[i]; break; }
-      }
-      var inst = Object.create(_real.prototype);
-      var r = _real.apply(inst, args);
-      return (r && typeof r === 'object') ? r : inst;
+      _grab(args);
+      var inst = Object.create(_real && _real.prototype ? _real.prototype : Object.prototype);
+      try { var r = _real.apply(inst, args); if (r && typeof r === 'object') inst = r; } catch(e) {}
+      return inst;
     }
     Object.defineProperty(window, 'TencentCaptcha', {
       configurable: true, enumerable: true,
@@ -1486,6 +1495,9 @@ def obtain_rc_token_via_provider(
             injected = False
             deadline = time.time() + timeout_ms / 1000.0
             result = None
+            inject_deadline = time.time() + 30  # stop retrying the hook after 30s
+            warned = False
+            diag_done = False
             while time.time() < deadline:
                 res = _poll_rc()
                 if res:
@@ -1499,8 +1511,15 @@ def obtain_rc_token_via_provider(
                 if not injected and _rc_slider_present(page):
                     if _rc_inject_token(page, token):
                         injected = True
-                    else:
+                        logger.info("[CAPTCHA] token injected; waiting for rc_token")
+                    elif not warned:
+                        warned = True
                         logger.info("[CAPTCHA] TencentCaptcha callback not captured yet; waiting...")
+                if not injected and not diag_done and time.time() > inject_deadline:
+                    diag_done = True
+                    _rc_log_frame_diagnostics(page)
+                    logger.error("[CAPTCHA] could not hand the token to the slider — see diagnostics above")
+                    break
                 page.wait_for_timeout(750)
 
             if result is None:
@@ -1511,3 +1530,22 @@ def obtain_rc_token_via_provider(
     except Exception:
         logger.exception("[CAPTCHA] obtain_rc_token_via_provider crashed")
         return None
+
+
+def _rc_log_frame_diagnostics(page) -> None:
+    """Log, per frame, how TCaptcha is exposed — to learn how to hand it the token."""
+    probe = """
+    () => ({
+        url: location.href.slice(0, 120),
+        tcaptcha: typeof window.TencentCaptcha,
+        hookInstalled: !!window.__tcapHookInstalled,
+        callbackCaptured: typeof window.__tcaptchaCallback,
+        captchaKeys: Object.keys(window).filter(k => /captcha|tcap|cap_|tdc|verif/i.test(k)).slice(0, 25),
+    })
+    """
+    for fr in page.frames:
+        try:
+            info = fr.evaluate(probe)
+            logger.info("[CAPTCHA][DIAG] %s", json.dumps(info))
+        except Exception as exc:
+            logger.info("[CAPTCHA][DIAG] frame %s probe failed: %s", (fr.url or "")[:80], exc)
