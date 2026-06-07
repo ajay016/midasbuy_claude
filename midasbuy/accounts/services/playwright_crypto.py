@@ -735,14 +735,17 @@ def _restore_server_data_snapshot(page, storage_state_path: str) -> None:
         logger.warning("[CRYPTO] SERVER_DATA snapshot restore failed: %s", exc)
 
 
-def _launch_context(p, storage_state_path: str, country_code: str, bypass_csp: bool = False):
+def _launch_context(p, storage_state_path: str, country_code: str, bypass_csp: bool = False,
+                    headless: Optional[bool] = None):
     from django.conf import settings
 
     ss_data = _load_session_storage(storage_state_path)
     server_data = _load_server_data_snapshot(storage_state_path)
 
+    if headless is None:
+        headless = getattr(settings, "MIDASBUY_CRYPTO_BROWSER_HEADLESS", True)
     browser = p.chromium.launch(
-        headless=getattr(settings, "MIDASBUY_CRYPTO_BROWSER_HEADLESS", True),
+        headless=headless,
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",

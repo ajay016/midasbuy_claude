@@ -46,8 +46,9 @@ class Command(BaseCommand):
         from accounts.models import MidasbuyAccount
         from accounts.services.playwright_crypto import (
             _get_playwright,
-            _load_session_storage,
-            _STEALTH_JS,
+            _launch_context,
+            _setup_chaos_vm_protection,
+            _wait_for_xmidas,
         )
 
         acct = MidasbuyAccount.objects.get(pk=opts["account_id"])
@@ -61,7 +62,8 @@ class Command(BaseCommand):
         country = opts["country"]
         out_dir = os.path.dirname(ssp)
         cap_path = os.path.join(out_dir, "redeem_commit_capture.txt")
-        redeem_url = f"https://www.midasbuy.com/midasbuy/{country}/redeem/pubgm"
+        # Same URL the working crypto flow uses, so window.xMidas initialises.
+        redeem_url = f"https://www.midasbuy.com/midasbuy/{country}/redeem/pubgm?from=self.midasbuy_saas"
 
         with open(cap_path, "w", encoding="utf-8") as f:
             f.write(f"# redeem commit capture  account={opts['account_id']}  {time.ctime()}\n")
@@ -74,7 +76,6 @@ class Command(BaseCommand):
                 pass
 
         sync_playwright, _ = _get_playwright()
-        ss_data = _load_session_storage(ssp)
 
         self.stdout.write(self.style.WARNING(
             "Opening headful browser. Do the FULL redemption by hand (look up player, "
@@ -82,23 +83,11 @@ class Command(BaseCommand):
         ))
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, args=[
-                "--no-sandbox", "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ])
-            context = browser.new_context(
-                storage_state=ssp,
-                viewport={"width": 1440, "height": 900},
-                locale="en-US",
-            )
-            context.add_init_script(_STEALTH_JS)
-            if ss_data:
-                ss_json = json.dumps(ss_data)
-                context.add_init_script(
-                    "(() => { const d=%s; for (const [k,v] of Object.entries(d)){ try{ sessionStorage.setItem(k,v);}catch(e){} } })();" % ss_json
-                )
-
+            # Reuse the working flow's launch (stealth + storage_state + SERVER_DATA
+            # snapshot) but headful, so the real page's player lookup / encryption works.
+            browser, context = _launch_context(p, ssp, country, headless=False)
             page = context.new_page()
+            _setup_chaos_vm_protection(page)
 
             def on_request(req):
                 try:
@@ -139,6 +128,10 @@ class Command(BaseCommand):
             page.on("response", on_response)
 
             page.goto(redeem_url, wait_until="load")
+            try:
+                _wait_for_xmidas(page, out_dir, 30_000)
+            except Exception:
+                pass
             self.stdout.write(self.style.SUCCESS(
                 f"Browser open at {redeem_url}. Complete the redemption now."
             ))
