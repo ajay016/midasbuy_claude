@@ -1735,6 +1735,24 @@ def call_redeem_order_in_browser(
 
             def _on_response(resp):
                 _record_network_event("response", resp)
+                # Save the result-page / callback bodies for debugging the commit.
+                try:
+                    u = resp.url.lower()
+                    if "/result/" in u or "/callback/" in u:
+                        body = None
+                        try:
+                            body = resp.text()
+                        except Exception:
+                            body = None
+                        dbg = os.path.join(os.path.dirname(storage_state_path), "redeem_commit_debug.txt")
+                        with open(dbg, "a", encoding="utf-8") as f:
+                            f.write(f"\n<< {resp.status} {resp.url.split('encrypt_msg=',1)[0]}\n")
+                            if body:
+                                f.write(body[:60000] + "\n")
+                        logger.info("[CRYPTO] redeem commit %s %s (saved to redeem_commit_debug.txt)",
+                                    resp.status, resp.url.split("encrypt_msg=", 1)[0][:110])
+                except Exception:
+                    pass
 
             try:
                 logger.info("[CRYPTO] cached redeem SDK order attempt=%d", attempt)

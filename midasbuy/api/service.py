@@ -459,26 +459,41 @@ async def submit_redeem(
             country_code,
         )
 
-        result_error = _redeem_result_error_message(result_data)
-        raw = {
-            "result": result_data,
-        }
+        # Redeem returns NO order_no/portal_serial (the result page IS the
+        # outcome), so the SDK message is not proof. The definitive, false-
+        # positive-proof check is to re-query the code: if it is now
+        # REDEEM_CODE_ALREADY_USED, the redemption went through.
+        logger.info("[REDEEM] verifying redemption by re-querying the code")
+        verify = await query_code_info(
+            player_id, pin_code, country_code, storage_state_path, cookies, zone_id,
+        )
+        verify_raw = verify.raw if isinstance(verify.raw, dict) else {}
+        err_code = str(verify_raw.get("err_code") or "")
+        ret = verify_raw.get("ret")
+        raw = {"result": result_data, "verify": verify_raw}
 
-        if result_error:
-            logger.warning("[REDEEM] final confirmation failed/unknown: %s", result_error)
+        if err_code == "REDEEM_CODE_ALREADY_USED":
+            message = "Redeemed successfully."
+            if product_name:
+                message = f"Redeemed successfully: {product_name}."
+            logger.info("[REDEEM] confirmed redeemed (code now reports already used)")
+            return RedeemResponse(success=True, message=message, raw=raw)
+
+        if ret == 0 or verify.confirmation_required:
+            logger.warning("[REDEEM] code still valid after confirm — redemption did NOT go through")
             return RedeemResponse(
                 success=False,
-                message=result_error,
+                message="Redemption did not go through — the code is still valid. Please try confirming again.",
                 raw=raw,
             )
 
-        message = "Redeemed successfully."
-        if product_name:
-            message = f"Redeemed successfully: {product_name}."
-
+        logger.warning("[REDEEM] could not verify redemption: err_code=%s ret=%s", err_code, ret)
         return RedeemResponse(
-            success=True,
-            message=message,
+            success=False,
+            message=(
+                "Could not verify the redemption. Check the account before retrying — "
+                f"the code may already be consumed. ({_redeem_result_error_message(result_data)})"
+            ),
             raw=raw,
         )
 
