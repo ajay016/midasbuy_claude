@@ -89,6 +89,30 @@ class Command(BaseCommand):
             page = context.new_page()
             _setup_chaos_vm_protection(page)
 
+            # Hook window.xMidas to record the PLAINTEXT it encrypts — the input to
+            # the result/pubgm encrypt_msg is exactly one of these calls.
+            context.add_init_script(r"""
+            () => {
+              try {
+                window.__xmidasCalls = [];
+                var _v = null;
+                function wrap(fn){
+                  return function(){
+                    try { window.__xmidasCalls.push(JSON.parse(JSON.stringify(arguments[0]))); } catch(e) {
+                      try { window.__xmidasCalls.push(String(arguments[0])); } catch(_) {}
+                    }
+                    return fn.apply(this, arguments);
+                  };
+                }
+                Object.defineProperty(window, 'xMidas', {
+                  configurable: true, enumerable: true,
+                  get: function(){ return _v; },
+                  set: function(f){ _v = (typeof f === 'function') ? wrap(f) : f; },
+                });
+              } catch(e) {}
+            }
+            """)
+
             def on_request(req):
                 try:
                     u = req.url
@@ -140,10 +164,20 @@ class Command(BaseCommand):
             sentinel = os.path.join(out_dir, "stop_capture.txt")
             self.stdout.write(f"Capturing for up to {opts['minutes']} min. "
                               f"Create {sentinel} (or close the window) to stop early.")
+            dumped_xmidas = 0
             try:
                 while time.time() < deadline:
                     if page.is_closed() or os.path.exists(sentinel):
                         break
+                    # Drain newly captured window.xMidas plaintext inputs.
+                    try:
+                        calls = page.evaluate("() => window.__xmidasCalls || []")
+                        for c in calls[dumped_xmidas:]:
+                            dump("\n[XMIDAS-INPUT] " + json.dumps(c)[:8000])
+                            self.stdout.write("  captured xMidas input")
+                        dumped_xmidas = len(calls)
+                    except Exception:
+                        pass
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
