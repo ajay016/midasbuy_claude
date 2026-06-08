@@ -61,6 +61,12 @@ _CHAOS_VM_LOCAL_PATH = os.path.normpath(
         "kEc9hjFh5DQJbz_iPEWrfFxadMVk4PbLDS-5P8jE73pfdUuDwNGKNVZjdEztcHdofAVaHXo6zRGXgLwuvsK_afAEj6w_mKyiUmq-7AesIRU~.js",
     )
 )
+_MIDAS_SDK_LOCAL_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "..",
+        "midas-oversea-h5page.js",
+    )
+)
 
 # Appended to the Chaos VM script (served via page.route).
 # Tries to lock window.xMidas immediately; if the VM assigned it async,
@@ -226,6 +232,7 @@ async ({payloadJson, endpoint, method}) => {
         let actualPayload = JSON.parse(payloadJson);
         const verifiedPlayerStorageKey = 'midasbuy_backend_verified_players';
         let verifiedPlayers = {};
+        let verifiedPlayer = null;
         let verifiedPlayerApplied = false;
         try {
             verifiedPlayers = JSON.parse(
@@ -233,7 +240,7 @@ async ({payloadJson, endpoint, method}) => {
             );
         } catch(e) {}
         if (endpoint.endsWith('/QueryRedeemCodeInfo')) {
-            const verifiedPlayer = verifiedPlayers[actualPayload.open_id];
+            verifiedPlayer = verifiedPlayers[actualPayload.open_id] || null;
             if (verifiedPlayer) {
                 Object.assign(payInfo, verifiedPlayer);
                 verifiedPlayerApplied = true;
@@ -307,13 +314,29 @@ async ({payloadJson, endpoint, method}) => {
         // Merge: actualPayload fields win over publicParams on overlap (e.g. country, appid)
         if (endpoint.endsWith('/QueryRedeemCodeInfo')) {
             const verificationPayload = actualPayload;
-            const zoneParts = String(
+            const playerUserId = (
+                verificationPayload.role_id ||
+                verifiedPlayer?.userid ||
+                verificationPayload.open_id ||
+                payInfo.userid ||
+                ''
+            );
+            const redeemOpenId = (
+                verifiedPlayer?.openid ||
+                payInfo.openid ||
+                payInfo.currentBindUser?.openid ||
+                verificationPayload.openid ||
+                verificationPayload.open_id ||
+                ''
+            );
+            const serverId = String(
+                verifiedPlayer?.zoneid ||
                 actualPayload.zone_id ||
                 payInfo.zoneid ||
                 payInfo.zone_id ||
                 payInfo.currentBindUser?.zoneid ||
                 '1'
-            ).split('_');
+            );
             const language = (
                 sd.countryInfo?.iso?.language ||
                 (Array.isArray(sd.countryInfo?.lang) ? sd.countryInfo.lang[0] : sd.countryInfo?.lang) ||
@@ -330,15 +353,15 @@ async ({payloadJson, endpoint, method}) => {
                 direct_redeem: '1',
                 offer_id: payInfo.appid || sd.appid || '1450015065',
                 platform: payInfo.platform || 'android',
-                server_id: zoneParts[0] || '',
+                server_id: serverId,
                 region: payInfo.country || sd.country || 'BD',
-                open_id: actualPayload.open_id || '',
+                open_id: redeemOpenId,
                 muid: user.uid || actualPayload.muid || sd.muid || '',
                 flexible_return_url: (
                     `https://${location.hostname}/h5/overseah5/views/riskcontrol/landing.html`
                 ),
                 user_ip: payInfo.ipInfo?.mall_ip || '',
-                role_id: zoneParts[1] || '',
+                role_id: playerUserId,
                 language,
                 shop_code: payInfo.shopcode || payInfo.shop_id || shopInfo.shopcode || '',
             };
@@ -405,6 +428,15 @@ async ({payloadJson, endpoint, method}) => {
             data,
             encrypt_msg_len: encrypt_msg.length,
             request_field_names: Object.keys(actualPayload).sort(),
+            request_debug: endpoint.endsWith('/QueryRedeemCodeInfo') ? {
+                open_id: actualPayload.open_id || '',
+                role_id: actualPayload.role_id || '',
+                server_id: actualPayload.server_id || '',
+                region: actualPayload.region || '',
+                shop_code: actualPayload.shop_code || '',
+                has_rc_token: !!actualPayload.rc_token,
+                has_rc_uuid: !!actualPayload.rc_uuid,
+            } : {},
             public_field_names: Object.keys(publicParams).sort(),
             full_json_length: fullJson.length,
             cgi_extend_length: cgi_extend.length,
@@ -551,8 +583,461 @@ async ({payloadJson}) => {
 }
 """
 
+_JS_REDEEM_RESULT_PAGE = """
+async ({payloadJson}) => {
+    try {
+        let tokenWait = 0;
+        while ((!document.getElementById('xMidasToken')?.value) && tokenWait < 150) {
+            await new Promise(r => setTimeout(r, 100));
+            tokenWait++;
+        }
+        const tokenEl = document.getElementById('xMidasToken');
+        if (!tokenEl || !tokenEl.value) return {error: 'no_xmidas_token'};
+
+        const ctoken = tokenEl.value;
+        const versionEl = document.getElementById('xMidasVersion');
+        const ctoken_ver = (versionEl && versionEl.value) ? versionEl.value : '1.0.1';
+
+        let xmWait = 0;
+        while (typeof window.xMidas !== 'function' && xmWait < 150) {
+            await new Promise(r => setTimeout(r, 100));
+            xmWait++;
+        }
+        if (typeof window.xMidas !== 'function') return {error: 'no_xmidas_function'};
+
+        const payload = JSON.parse(payloadJson);
+        const snapshot = window.__backendBootstrap || {};
+        const liveServerData = window.SERVER_DATA || {};
+        const sd = Object.assign({}, snapshot, liveServerData);
+        sd.payInfo = Object.assign(
+            {},
+            snapshot.payInfo || {},
+            liveServerData.payInfo || {}
+        );
+        window.SERVER_DATA = sd;
+
+        const payInfo = sd.payInfo || {};
+        let storedUser = {};
+        try {
+            storedUser = JSON.parse(sessionStorage.getItem('user_login_data') || '{}');
+        } catch(e) {}
+
+        let verifiedPlayers = {};
+        try {
+            verifiedPlayers = JSON.parse(
+                sessionStorage.getItem('midasbuy_backend_verified_players') || '{}'
+            );
+        } catch(e) {}
+
+        const verifiedPlayer = verifiedPlayers[payload.player_id] || {};
+        if (verifiedPlayer.openid) {
+            Object.assign(payInfo, verifiedPlayer);
+        }
+
+        const resultOpenId = (
+            payload.openid ||
+            verifiedPlayer.openid ||
+            payInfo.openid ||
+            payInfo.currentBindUser?.openid ||
+            payload.player_id ||
+            ''
+        );
+        if (!resultOpenId) return {error: 'missing_result_openid'};
+
+        const buyType = (
+            new URLSearchParams(location.search).get('buyType') ||
+            sd.buyType ||
+            'REDEEM'
+        ).toUpperCase();
+        let pageId = String(payInfo.pageid || '').trim();
+        if (!pageId) {
+            pageId = `page_${String(Math.random()).slice(2, 19)}`;
+        }
+        const buyTypeKey = payload.buy_type_key || `CURRENT_BUY_ITEM_${buyType}_${pageId}`;
+
+        const country = String(payload.country_code || sd.country || 'bd').toLowerCase();
+        const gameShortUrl = sd.gameConfig?.gameShortUrl || payload.game_short_url || 'pubgm';
+        const resultParams = {
+            appid: String(payInfo.appid || sd.appid || payload.appid || '1450015065'),
+            type: 'redeem',
+            resultPageType: 'redeem',
+            openid: resultOpenId,
+            buy_type_key: buyTypeKey,
+            gameShortUrl,
+            isFromJsx: 'true',
+        };
+        const fullJson = JSON.stringify(resultParams);
+
+        let serverTimeOffset = Number(window._SERVER_TIME_OFFSET || 0);
+        if (serverTimeOffset > 0 && serverTimeOffset <= 15000) {
+            serverTimeOffset = 0;
+        }
+        const pageTime = Date.now() - serverTimeOffset;
+        const pagetoken = btoa(`${location.hostname}_${pageTime}_${resultOpenId}`);
+
+        try { window.xMidas(); } catch(e) {}
+        const hexResult = window.xMidas({d: fullJson});
+        if (!hexResult || typeof hexResult !== 'string' || hexResult.length === 0) {
+            return {error: 'xmidas_empty'};
+        }
+
+        const bytes = (hexResult.match(/../g) || []).map(h => parseInt(h, 16));
+        const encrypt_msg = btoa(String.fromCharCode(...bytes));
+        document.cookie = `pagetoken=${pagetoken}; path=/`;
+
+        const url = new URL(
+            `https://${location.hostname}/midasbuy/${country}/result/${gameShortUrl}`
+        );
+        for (const [key, value] of Object.entries(resultParams)) {
+            url.searchParams.set(key, value);
+        }
+        url.searchParams.set('encrypt_msg', encrypt_msg);
+        url.searchParams.set('ctoken_ver', ctoken_ver);
+        url.searchParams.set('ctoken', ctoken);
+
+        const resp = await fetch(url.toString(), {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json, text/plain, */*',
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+            credentials: 'include',
+        });
+        const text = await resp.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch(e) {
+            return {
+                error: 'invalid_json',
+                status: resp.status,
+                text: text.substring(0, 300),
+                result_url: url.toString(),
+                encrypt_msg_len: encrypt_msg.length,
+            };
+        }
+
+        return {
+            ok: true,
+            status: resp.status,
+            data,
+            result_url: url.toString(),
+            result_openid: resultOpenId,
+            buy_type_key: buyTypeKey,
+            encrypt_msg_len: encrypt_msg.length,
+            full_json_length: fullJson.length,
+            pagetoken_length: pagetoken.length,
+            request_field_names: Object.keys(resultParams).sort(),
+            verified_player_applied: !!verifiedPlayer.openid,
+        };
+    } catch(e) {
+        return {
+            error: 'js_exception',
+            detail: String(e),
+            stack: (e.stack || '').substring(0, 500),
+        };
+    }
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+_JS_REDEEM_ORDER = """
+async ({payloadJson, sdkScript}) => {
+    const messages = [];
+    const pushMessage = (kind, value) => {
+        try { messages.push({kind, value}); } catch(e) {}
+    };
+    const queryString = (obj) => Object.keys(obj)
+        .filter(k => obj[k] !== undefined && obj[k] !== null && obj[k] !== '')
+        .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]))
+        .join('&');
+    const parseMaybeJson = (value) => {
+        if (typeof value !== 'string') return value;
+        try { return JSON.parse(value); } catch(e) { return value; }
+    };
+    const extractOrder = (value) => {
+        const data = parseMaybeJson(value) || {};
+        if (typeof data !== 'object') return {};
+        const url = data.url || data.successUrl || data.link || '';
+        let queryOrder = {};
+        if (url && typeof url === 'string') {
+            try {
+                const parsed = new URL(url, location.href);
+                queryOrder = {
+                    order_no: parsed.searchParams.get('order_no') || '',
+                    order_no_hash: parsed.searchParams.get('order_no_hash') || '',
+                    portal_serial_no: parsed.searchParams.get('portal_serial_no') || '',
+                };
+            } catch(e) {}
+        }
+        return {
+            order_no: data.order_no || data.orderNo || data.orderInfo?.order_no || queryOrder.order_no || '',
+            order_no_hash: data.order_no_hash || data.orderNoHash || queryOrder.order_no_hash || '',
+            portal_serial_no: data.portal_serial_no || data.portalNo || data.orderInfo?.portal_serial_no || queryOrder.portal_serial_no || '',
+            status: data.status || data.orderStatus || '',
+            action: data.action || data._cmd__ || data.type || '',
+            raw: data,
+        };
+    };
+
+    try {
+        const input = JSON.parse(payloadJson);
+        const cleanCode = String(input.pin_code || input.redeem_code || '').replace(/\\s+/g, '');
+        if (!cleanCode) return {error: 'missing_redeem_code'};
+
+        if (!window.midas?.buyGame && sdkScript) {
+            const script = document.createElement('script');
+            script.text = sdkScript;
+            document.head.appendChild(script);
+            script.remove();
+        }
+        let midasWait = 0;
+        while (!window.midas?.buyGame && midasWait < 10) {
+            await new Promise(r => setTimeout(r, 100));
+            midasWait++;
+        }
+        if (!window.midas?.buyGame) {
+            return {
+                error: 'no_midas_buy_game',
+                midasKeys: Object.keys(window).filter(k => k.toLowerCase().includes('midas')),
+            };
+        }
+
+        let tokenWait = 0;
+        while ((!document.getElementById('xMidasToken')?.value) && tokenWait < 150) {
+            await new Promise(r => setTimeout(r, 100));
+            tokenWait++;
+        }
+        if (!document.getElementById('xMidasToken')?.value) return {error: 'no_xmidas_token'};
+
+        let storedUser = {};
+        try { storedUser = JSON.parse(sessionStorage.getItem('user_login_data') || '{}'); } catch(e) {}
+        let verifiedPlayers = {};
+        try {
+            verifiedPlayers = JSON.parse(sessionStorage.getItem('midasbuy_backend_verified_players') || '{}');
+        } catch(e) {}
+
+        const snapshot = window.__backendBootstrap || {};
+        const liveServerData = window.SERVER_DATA || {};
+        const sd = Object.assign({}, snapshot, liveServerData);
+        sd.payInfo = Object.assign({}, snapshot.payInfo || {}, liveServerData.payInfo || {});
+        window.SERVER_DATA = sd;
+
+        const payInfo = sd.payInfo;
+        const playerId = String(input.player_id || '');
+        const verifiedPlayer = verifiedPlayers[playerId] || {};
+        if (verifiedPlayer.openid) Object.assign(payInfo, verifiedPlayer);
+
+        const ri = window.__Report_INFO || {};
+        const rp = sd.reportParams || {};
+        const shopInfo = sd.shopInfo || {};
+        const appid = String(input.appid || payInfo.appid || sd.appid || '1450015065');
+        const openid = String(verifiedPlayer.openid || payInfo.openid || payInfo.currentBindUser?.openid || '');
+        const userid = String(verifiedPlayer.userid || payInfo.userid || payInfo.currentBindUser?.userid || playerId);
+        const zoneid = String(verifiedPlayer.zoneid || payInfo.zoneid || payInfo.zone_id || payInfo.currentBindUser?.zoneid || '1');
+        const productId = String(input.product_id || '');
+        if (!openid) return {error: 'missing_verified_openid', player_id: playerId};
+        if (!productId) return {error: 'missing_product_id'};
+
+        const user = sd.user || payInfo.midasUser || storedUser || {};
+        const muid = rp.midasuid || ri.midasuid || sd.muid || user.uid || payInfo.midasUser?.uid || storedUser.uid || '';
+        const deviceMatch = document.cookie.match(/midasbuyDeviceId=([^;]*)/);
+        const deviceId = rp.midasbuyDeviceId || ri.midasbuyDeviceId || (deviceMatch ? deviceMatch[1] : '');
+        const uuidMatch = document.cookie.match(/UUID=([^;]*)/);
+        const tdrcFp = uuidMatch ? uuidMatch[1] : '';
+        let serverTimeOffset = Number(window._SERVER_TIME_OFFSET || 0);
+        if (serverTimeOffset > 0 && serverTimeOffset <= 15000) serverTimeOffset = 0;
+        const pageTime = Date.now() - serverTimeOffset;
+        const pagetoken = btoa(`${location.hostname}_${pageTime}_${openid}`);
+        const pf = payInfo.pf || 'mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas';
+        const country = String(payInfo.country || sd.country || input.country_code || 'BD').toUpperCase();
+        const currencyType = String(payInfo.currency_type || sd.currency_type || 'BDT');
+        const rawPageId = String(payInfo.pageid || ri.pageid || Math.random()).replace(/^page_/, '');
+        const pageId = rawPageId || String(Math.random()).slice(2, 19);
+        const buyTypeKey = `CURRENT_BUY_ITEM_REDEEM_page_${pageId}`;
+        const callbackBase = `${location.protocol}//${location.hostname}${location.port ? ':' + location.port : ''}/callback/`;
+
+        payInfo.appid = appid;
+        payInfo.openid = openid;
+        payInfo.userid = userid;
+        payInfo.zoneid = zoneid;
+        payInfo.country = country;
+        payInfo.currency_type = currencyType;
+        payInfo.pf = pf;
+        payInfo.platform = payInfo.platform || 'android';
+        payInfo.shop_id = payInfo.shop_id || payInfo.shopcode || shopInfo.shopcode || 'midasbuy';
+        payInfo.shopcode = payInfo.shopcode || payInfo.shop_id || shopInfo.shopcode || 'midasbuy';
+        payInfo.currentBindUser = Object.assign({}, payInfo.currentBindUser || {}, {openid, userid, zoneid});
+
+        let iframe = document.getElementById('redeemCodeChannelIframe');
+        if (!iframe) {
+            iframe = document.createElement('iframe');
+            iframe.id = 'redeemCodeChannelIframe';
+            iframe.setAttribute('frameborder', '0');
+            document.body.appendChild(iframe);
+        }
+        Object.assign(iframe.style, {
+            display: 'block',
+            visibility: 'visible',
+            width: '0px',
+            height: '0px',
+            position: 'fixed',
+            left: '-9999px',
+            top: '-9999px',
+        });
+
+        const cgiExtend = {
+            device_id: deviceId,
+            order_refer: '',
+            pagetoken,
+            tdrc_fp: tdrcFp,
+            muid,
+        };
+        if (payInfo.ipInfo?.mall_ip) cgiExtend.mall_ip = payInfo.ipInfo.mall_ip;
+
+        const params = {
+            pageid: `page_${pageId}`,
+            appid,
+            openid,
+            sandbox: payInfo.sandbox || '',
+            pf,
+            platform: payInfo.platform || 'android',
+            isShelfRule: +!!sd.isShelfRule,
+            drm_info: encodeURIComponent(queryString(payInfo.drm_info || {})),
+            usePC: '1',
+            pfkey: payInfo.pfkey || '',
+            currency_type: currencyType,
+            country,
+            session_id: 'hy_gameid',
+            session_type: 'st_dummy',
+            zoneid,
+            charac_no: userid,
+            productid: productId,
+            origin_product_id: productId,
+            ca: '0',
+            pendingUrl: `${callbackBase}pending?isFromJsx=true&buy_type_key=${buyTypeKey}`,
+            successUrl: `${callbackBase}success?isFromJsx=true&buy_type_key=${buyTypeKey}`,
+            failUrl: `${callbackBase}fail?isFromJsx=true&buy_type_key=${buyTypeKey}`,
+            msgUrl: location.href,
+            version: 'midasbuy_v2',
+            localKey: buyTypeKey,
+            app_metadata: encodeURIComponent(`muid=${muid || ''}`),
+            cgi_extend: queryString(cgiExtend).replace(/[!'()]/g, ''),
+            shelf_product_id: productId,
+            quantity: '1',
+            shop_id: payInfo.shop_id || 'midasbuy',
+            promotions: '[]',
+            from: pf,
+            num: '1',
+            send: '0',
+            gift: '',
+            buyTypeKey,
+            image_url: '',
+            lan: (sd.countryInfo?.iso?.language || 'en').split('-')[0],
+            channel: 'os_midaspay_v2',
+            subchannel: 'MIDASBUY_REDEEM',
+            id: 'MIDASBUY_REDEEM',
+            productId,
+            newtab: 0,
+            usePost: '1',
+            target: iframe.contentWindow,
+            redeem_code: cleanCode,
+        };
+
+        const result = await new Promise(resolve => {
+            let done = false;
+            const finish = (value) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                window.removeEventListener('message', onWindowMessage);
+                resolve(value);
+            };
+            const onWindowMessage = (event) => {
+                const parsed = parseMaybeJson(event.data);
+                pushMessage('window_message', {origin: event.origin, data: parsed});
+                const order = extractOrder(parsed);
+                if (order.order_no || order.portal_serial_no) {
+                    finish(Object.assign({ok: true, source: 'window_message'}, order));
+                }
+                if (order.action === 'error' || order.status === 'error') {
+                    finish({error: 'sdk_window_error', source: 'window_message', data: parsed});
+                }
+            };
+            const timer = setTimeout(() => {
+                finish({
+                    error: 'sdk_order_timeout',
+                    iframe_src: iframe.getAttribute('src') || '',
+                    messages,
+                });
+            }, 12000);
+
+            window.addEventListener('message', onWindowMessage);
+            try {
+                window.midas.buyGame(params, {
+                    onMessage(value) {
+                        pushMessage('onMessage', parseMaybeJson(value));
+                        const order = extractOrder(value);
+                        if (order.order_no || order.portal_serial_no) {
+                            finish(Object.assign({ok: true, source: 'onMessage'}, order));
+                        }
+                        if (order.action === 'error' || order.status === 'error') {
+                            finish({error: 'sdk_on_message_error', source: 'onMessage', data: value});
+                        }
+                    },
+                    onSuccess(value) {
+                        pushMessage('onSuccess', parseMaybeJson(value));
+                        const order = extractOrder(value);
+                        finish(Object.assign({ok: true, source: 'onSuccess'}, order));
+                    },
+                    onError(value) {
+                        pushMessage('onError', parseMaybeJson(value));
+                        finish({error: 'sdk_on_error', source: 'onError', data: value});
+                    },
+                });
+            } catch(e) {
+                finish({
+                    error: 'sdk_exception',
+                    detail: String(e),
+                    stack: (e.stack || '').substring(0, 500),
+                });
+            }
+        });
+
+        const iframeSrc = iframe.getAttribute('src') || '';
+        return Object.assign({}, result, {
+            order_param_names: Object.keys(params).filter(k => k !== 'target').sort(),
+            request_debug: {
+                appid,
+                openid,
+                userid,
+                zoneid,
+                product_id: productId,
+                currency_type: currencyType,
+                buy_type_key: buyTypeKey,
+                channel: params.channel,
+                subchannel: params.subchannel,
+                has_redeem_code: !!cleanCode,
+                has_target: !!params.target,
+                cgi_extend_len: params.cgi_extend.length,
+                has_midas_buy_game: !!window.midas?.buyGame,
+            },
+            iframe_src: iframeSrc.split('encrypt_msg=', 1)[0],
+            messages,
+        });
+    } catch(e) {
+        return {
+            error: 'js_exception',
+            detail: String(e),
+            stack: (e.stack || '').substring(0, 500),
+            messages,
+        };
+    }
+}
+"""
+
 
 def _setup_chaos_vm_protection(page) -> None:
     """
@@ -1095,7 +1580,7 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
         "cgi_len=%s  drm_len=%s  exp_len=%s  pagetoken_len=%s  "
         "device=%s  muid=%s  ip=%s  drm=%s  exp=%s  verified_players=%s  "
         "verified_player_applied=%s  "
-        "request_fields=%s  public_fields=%s",
+        "request_fields=%s  request_debug=%s  public_fields=%s",
         result.get("status"),
         result.get("encrypt_msg_len"),
         result.get("full_json_length"),
@@ -1111,6 +1596,7 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
         result.get("verified_player_count"),
         result.get("verified_player_applied"),
         result.get("request_field_names"),
+        result.get("request_debug"),
         result.get("public_field_names"),
     )
     return result.get("data")
@@ -1161,6 +1647,316 @@ def _call_api_in_cached_browser(
                     continue
 
             return _extract_browser_result(result, endpoint)
+
+    return None
+
+
+def _sdk_redeem_error_message(result: dict) -> str:
+    error = str(result.get("error") or "sdk_order_failed")
+    if error == "sdk_order_timeout":
+        return (
+            "Midasbuy did not return an order confirmation from the redeem "
+            "iframe. The code has not been confirmed as redeemed."
+        )
+    if error == "no_midas_buy_game":
+        return "Midasbuy redeem SDK did not initialize in the browser session."
+    if error == "missing_product_id":
+        return "Redeem product information was missing before final confirmation."
+    if error == "missing_verified_openid":
+        return "Player lookup data was missing before final confirmation."
+    if error.startswith("sdk_on_error") or error.startswith("sdk_window_error"):
+        data = result.get("data")
+        if isinstance(data, dict):
+            return data.get("msg") or data.get("message") or error
+    return error
+
+
+def call_redeem_order_in_browser(
+    payload: dict,
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 60_000,
+) -> Optional[dict]:
+    """
+    Submit the actual Midasbuy redeem transaction through the official SDK.
+
+    QueryRedeemCodeInfo only validates the code. A real successful redemption
+    emits /callback/success with order_no/order_no_hash through the hidden
+    MIDASBUY_REDEEM iframe. This function invokes window.midas.buyGame and
+    returns only the SDK/order message, not the result-page JSON.
+    """
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    sdk_script = ""
+    try:
+        with open(_MIDAS_SDK_LOCAL_PATH, encoding="utf-8") as file:
+            sdk_script = file.read()
+    except OSError as exc:
+        logger.warning("[CRYPTO] local Midas SDK unavailable: %s", exc)
+
+    for attempt in (1, 2):
+        try:
+            session = _get_or_create_cached_session(
+                storage_state_path,
+                country_code,
+                timeout_ms,
+            )
+        except Exception:
+            logger.exception("[CRYPTO] could not create cached browser session")
+            return None
+
+        with session.lock:
+            network_events = []
+
+            def _record_network_event(kind, obj):
+                try:
+                    url = obj.url
+                    if not (
+                        "midasbuy.com" in url
+                        or "harvestsharp.com" in url
+                        or "api.unipay.qq.com" in url
+                    ):
+                        return
+
+                    event = {
+                        "kind": kind,
+                        "method": getattr(obj, "method", None),
+                        "url": url.split("encrypt_msg=", 1)[0],
+                    }
+                    if kind == "response":
+                        event["status"] = obj.status
+                        event["method"] = obj.request.method
+                    if len(network_events) < 60:
+                        network_events.append(event)
+                except Exception:
+                    pass
+
+            def _on_request(req):
+                _record_network_event("request", req)
+
+            def _on_response(resp):
+                _record_network_event("response", resp)
+
+            try:
+                logger.info("[CRYPTO] cached redeem SDK order attempt=%d", attempt)
+                session.page.on("request", _on_request)
+                session.page.on("response", _on_response)
+                result = session.page.evaluate(_JS_REDEEM_ORDER, {
+                    "payloadJson": payload_json,
+                    "sdkScript": sdk_script,
+                })
+                session.last_used = time.time()
+            except Exception:
+                logger.exception("[CRYPTO] cached redeem SDK order evaluate failed")
+                _discard_cached_session(session)
+                if attempt == 1:
+                    continue
+                return None
+            finally:
+                try:
+                    session.page.remove_listener("request", _on_request)
+                    session.page.remove_listener("response", _on_response)
+                except Exception:
+                    pass
+
+            if not result:
+                logger.error("[CRYPTO] redeem SDK order evaluate returned None")
+                return None
+
+            if result.get("error") in {
+                "no_xmidas_token",
+                "js_exception",
+            }:
+                logger.warning(
+                    "[CRYPTO] cached page stale during redeem SDK order (%s), rebuilding",
+                    result.get("error"),
+                )
+                _discard_cached_session(session)
+                if attempt == 1:
+                    continue
+
+            logger.info(
+                "[CRYPTO] redeem SDK order result ok=%s error=%s source=%s "
+                "order_no=%s portal_serial_no=%s iframe_src=%s",
+                result.get("ok"),
+                result.get("error"),
+                result.get("source"),
+                result.get("order_no"),
+                result.get("portal_serial_no"),
+                result.get("iframe_src"),
+            )
+            logger.info(
+                "[CRYPTO] redeem SDK order debug=%s",
+                json.dumps(result.get("request_debug") or {}, ensure_ascii=False),
+            )
+            logger.debug(
+                "[CRYPTO] redeem SDK order messages=%s",
+                json.dumps(result.get("messages") or [], ensure_ascii=False, default=str)[:5000],
+            )
+            logger.debug(
+                "[CRYPTO] redeem SDK order network events=%s",
+                json.dumps(network_events, ensure_ascii=False),
+            )
+
+            if result.get("error"):
+                return {
+                    "ret": 1,
+                    "err_code": result.get("error"),
+                    "msg": _sdk_redeem_error_message(result),
+                    "sdk_result": result,
+                    "network_events": network_events,
+                }
+
+            result["network_events"] = network_events
+            return result
+
+    return None
+
+
+def call_redeem_result_in_browser(
+    payload: dict,
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 60_000,
+) -> Optional[dict]:
+    """
+    Confirm a valid redeem code by loading Midasbuy's encrypted result route.
+
+    The official redeem confirmation does not POST another JSON API in the
+    captured HAR. It navigates/fetches:
+        /midasbuy/<country>/result/pubgm?...&encrypt_msg=...&ctoken=...
+    where encrypt_msg is generated from {t, h, o}, not the full redeem payload.
+    """
+    payload_json = json.dumps(payload, separators=(",", ":"))
+
+    for attempt in (1, 2):
+        try:
+            session = _get_or_create_cached_session(
+                storage_state_path,
+                country_code,
+                timeout_ms,
+            )
+        except Exception:
+            logger.exception("[CRYPTO] could not create cached browser session")
+            return None
+
+        with session.lock:
+            network_events = []
+
+            def _record_network_event(kind, obj):
+                try:
+                    url = obj.url
+                    if not (
+                        "midasbuy.com" in url
+                        or "harvestsharp.com" in url
+                        or "tencent.com" in url
+                    ):
+                        return
+
+                    event = {
+                        "kind": kind,
+                        "method": getattr(obj, "method", None),
+                        "url": url.split("encrypt_msg=", 1)[0],
+                    }
+                    if kind == "response":
+                        event["status"] = obj.status
+                        event["method"] = obj.request.method
+                    if len(network_events) < 30:
+                        network_events.append(event)
+                except Exception:
+                    pass
+
+            def _on_request(req):
+                _record_network_event("request", req)
+
+            def _on_response(resp):
+                _record_network_event("response", resp)
+
+            try:
+                logger.info("[CRYPTO] cached redeem result GET attempt=%d", attempt)
+                session.page.on("request", _on_request)
+                session.page.on("response", _on_response)
+                result = session.page.evaluate(_JS_REDEEM_RESULT_PAGE, {
+                    "payloadJson": payload_json,
+                })
+                session.last_used = time.time()
+            except Exception:
+                logger.exception("[CRYPTO] cached redeem result evaluate failed")
+                _discard_cached_session(session)
+                if attempt == 1:
+                    continue
+                return None
+            finally:
+                try:
+                    session.page.remove_listener("request", _on_request)
+                    session.page.remove_listener("response", _on_response)
+                except Exception:
+                    pass
+
+            if result and result.get("error") in {
+                "no_xmidas_token",
+                "no_xmidas_function",
+                "xmidas_empty",
+                "js_exception",
+            }:
+                logger.warning(
+                    "[CRYPTO] cached page stale during redeem result (%s), rebuilding",
+                    result.get("error"),
+                )
+                _discard_cached_session(session)
+                if attempt == 1:
+                    continue
+
+            if not result:
+                logger.error("[CRYPTO] redeem result evaluate returned None")
+                return None
+
+            if result.get("error"):
+                logger.error(
+                    "[CRYPTO] redeem result failed error=%s status=%s detail=%s text=%s",
+                    result.get("error"),
+                    result.get("status"),
+                    result.get("detail"),
+                    result.get("text"),
+                )
+                return None
+
+            logger.info(
+                "[CRYPTO] redeem result ok status=%s encrypt_msg_len=%s "
+                "full_json_len=%s pagetoken_len=%s openid=%s buy_type_key=%s "
+                "verified_player_applied=%s result_url=%s",
+                result.get("status"),
+                result.get("encrypt_msg_len"),
+                result.get("full_json_length"),
+                result.get("pagetoken_length"),
+                result.get("result_openid"),
+                result.get("buy_type_key"),
+                result.get("verified_player_applied"),
+                result.get("result_url", "").split("encrypt_msg=", 1)[0],
+            )
+
+            data = result.get("data")
+            if isinstance(data, dict):
+                pay_info = data.get("payInfo") if isinstance(data.get("payInfo"), dict) else {}
+                current_bind_user = (
+                    pay_info.get("currentBindUser")
+                    if isinstance(pay_info.get("currentBindUser"), dict)
+                    else {}
+                )
+                logger.info(
+                    "[CRYPTO] redeem result markers pageHandlerName=%s type=%s "
+                    "isRedeem=%s appid=%s bind_openid=%s bind_userid=%s",
+                    data.get("pageHandlerName"),
+                    data.get("type"),
+                    data.get("isRedeem"),
+                    data.get("appid"),
+                    current_bind_user.get("openid"),
+                    current_bind_user.get("userid"),
+                )
+            logger.debug(
+                "[CRYPTO] redeem result network events=%s",
+                json.dumps(network_events, ensure_ascii=False),
+            )
+            return data
 
     return None
 
