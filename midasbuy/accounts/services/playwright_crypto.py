@@ -1378,7 +1378,7 @@ def _create_cached_session(
     try:
         manager = sync_playwright()
         p = manager.start()
-        browser, context = _launch_context(p, storage_state_path, country_code)
+        browser, context = _launch_context(p, storage_state_path, country_code, bypass_csp=True)
         page = context.new_page()
 
         _setup_lightweight_routes(page)
@@ -1671,6 +1671,54 @@ def _sdk_redeem_error_message(result: dict) -> str:
     return error
 
 
+def _eval_main_world_async(page, fn_source: str, args: dict, timeout_ms: int) -> Optional[dict]:
+    """
+    Run an async arrow function (fn_source, e.g. _JS_REDEEM_ORDER) in the page
+    MAIN world — where window.midas lives — instead of patchright's isolated
+    world, and poll the JSON result back via a DOM element. Requires bypass_csp.
+    """
+    nonce = os.urandom(6).hex()
+    page.evaluate(
+        """(a) => {
+            const inEl = document.createElement('div');
+            inEl.id = '__ro_in_' + a.nonce; inEl.style.display = 'none';
+            inEl.textContent = a.input;
+            inEl.setAttribute('data-fn', a.fn);
+            document.documentElement.appendChild(inEl);
+            const outEl = document.createElement('div');
+            outEl.id = '__ro_out_' + a.nonce; outEl.style.display = 'none';
+            document.documentElement.appendChild(outEl);
+            const s = document.createElement('script');
+            s.textContent =
+                '(function(){var i=document.getElementById("__ro_in_' + a.nonce + '");' +
+                'var o=document.getElementById("__ro_out_' + a.nonce + '");try{' +
+                'var fn=(0,eval)("(" + i.getAttribute("data-fn") + ")");' +
+                'Promise.resolve(fn(JSON.parse(i.textContent))).then(function(r){' +
+                'o.textContent=JSON.stringify(r===undefined?null:r);}).catch(function(e){' +
+                'o.textContent=JSON.stringify({error:"mainworld_exception",detail:String(e)});});' +
+                '}catch(e){o.textContent=JSON.stringify({error:"mainworld_eval",detail:String(e)});}})();';
+            document.documentElement.appendChild(s);
+            s.remove();
+        }""",
+        {"nonce": nonce, "input": json.dumps(args), "fn": fn_source},
+    )
+
+    import time as _t
+    deadline = _t.time() + timeout_ms / 1000.0
+    while _t.time() < deadline:
+        raw = page.evaluate(
+            "(n) => { const o = document.getElementById('__ro_out_' + n); return o && o.textContent ? o.textContent : null; }",
+            nonce,
+        )
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {"error": "mainworld_bad_json"}
+        page.wait_for_timeout(500)
+    return {"error": "mainworld_timeout"}
+
+
 def call_redeem_order_in_browser(
     payload: dict,
     storage_state_path: str,
@@ -1755,13 +1803,17 @@ def call_redeem_order_in_browser(
                     pass
 
             try:
-                logger.info("[CRYPTO] cached redeem SDK order attempt=%d", attempt)
+                logger.info("[CRYPTO] cached redeem SDK order attempt=%d (main world)", attempt)
                 session.page.on("request", _on_request)
                 session.page.on("response", _on_response)
-                result = session.page.evaluate(_JS_REDEEM_ORDER, {
-                    "payloadJson": payload_json,
-                    "sdkScript": sdk_script,
-                })
+                # window.midas lives in the MAIN world; patchright evaluate is
+                # isolated, so run the order there via the main-world bridge.
+                result = _eval_main_world_async(
+                    session.page,
+                    _JS_REDEEM_ORDER,
+                    {"payloadJson": payload_json, "sdkScript": sdk_script},
+                    18_000,
+                )
                 session.last_used = time.time()
             except Exception:
                 logger.exception("[CRYPTO] cached redeem SDK order evaluate failed")
