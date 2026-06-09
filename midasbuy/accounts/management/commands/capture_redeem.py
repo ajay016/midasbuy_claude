@@ -89,20 +89,24 @@ class Command(BaseCommand):
             page = context.new_page()
             _setup_chaos_vm_protection(page)
 
-            # Hook window.xMidas to record the PLAINTEXT it encrypts — the input to
-            # the result/pubgm encrypt_msg is exactly one of these calls.
+            # Hook window.xMidas to record the PLAINTEXT it encrypts. Persist to
+            # sessionStorage so it survives the confirm navigation to /result/pubgm
+            # (which otherwise wipes a window-level array).
             context.add_init_script(r"""
             () => {
               try {
-                window.__xmidasCalls = [];
+                var KEY = '__xmidasCalls';
+                function record(arg){
+                  try {
+                    var arr = JSON.parse(sessionStorage.getItem(KEY) || '[]');
+                    var v; try { v = JSON.parse(JSON.stringify(arg)); } catch(e){ v = String(arg); }
+                    arr.push(v);
+                    sessionStorage.setItem(KEY, JSON.stringify(arr));
+                  } catch(e) {}
+                }
                 var _v = null;
                 function wrap(fn){
-                  return function(){
-                    try { window.__xmidasCalls.push(JSON.parse(JSON.stringify(arguments[0]))); } catch(e) {
-                      try { window.__xmidasCalls.push(String(arguments[0])); } catch(_) {}
-                    }
-                    return fn.apply(this, arguments);
-                  };
+                  return function(){ record(arguments[0]); return fn.apply(this, arguments); };
                 }
                 Object.defineProperty(window, 'xMidas', {
                   configurable: true, enumerable: true,
@@ -169,9 +173,12 @@ class Command(BaseCommand):
                 while time.time() < deadline:
                     if page.is_closed() or os.path.exists(sentinel):
                         break
-                    # Drain newly captured window.xMidas plaintext inputs.
+                    # Drain newly captured window.xMidas plaintext inputs
+                    # (sessionStorage survives the confirm navigation).
                     try:
-                        calls = page.evaluate("() => window.__xmidasCalls || []")
+                        calls = page.evaluate(
+                            "() => { try { return JSON.parse(sessionStorage.getItem('__xmidasCalls') || '[]'); } catch(e) { return []; } }"
+                        )
                         for c in calls[dumped_xmidas:]:
                             dump("\n[XMIDAS-INPUT] " + json.dumps(c)[:8000])
                             self.stdout.write("  captured xMidas input")
