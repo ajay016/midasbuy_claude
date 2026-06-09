@@ -41,6 +41,11 @@ class Command(BaseCommand):
         parser.add_argument("--account-id", type=int, default=1)
         parser.add_argument("--country", default="bd")
         parser.add_argument("--minutes", type=int, default=30)
+        parser.add_argument(
+            "--block-commit", action="store_true",
+            help="Abort the /result/pubgm request so the code is NOT consumed, while still "
+                 "capturing the xMidas plaintext built just before it.",
+        )
 
     def handle(self, *args, **opts):
         from accounts.models import MidasbuyAccount
@@ -154,6 +159,27 @@ class Command(BaseCommand):
 
             page.on("request", on_request)
             page.on("response", on_response)
+
+            if opts["block_commit"]:
+                # Abort the commit so the code is preserved; the xMidas plaintext
+                # is built client-side before this request fires, so we still get it.
+                def _block(route):
+                    try:
+                        if "/result/" in route.request.url:
+                            self.stdout.write(self.style.WARNING("  BLOCKED commit: " + route.request.url[:110]))
+                            route.abort()
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        route.continue_()
+                    except Exception:
+                        pass
+                page.route("**/result/**", _block)
+                self.stdout.write(self.style.WARNING(
+                    "--block-commit ON: the redemption will be aborted (code preserved); "
+                    "we only capture the xMidas plaintext."
+                ))
 
             page.goto(redeem_url, wait_until="load")
             try:
