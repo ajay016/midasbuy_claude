@@ -459,10 +459,28 @@ async def submit_redeem(
             country_code,
         )
 
-        # Redeem returns NO order_no/portal_serial (the result page IS the
-        # outcome), so the SDK message is not proof. The definitive, false-
-        # positive-proof check is to re-query the code: if it is now
-        # REDEEM_CODE_ALREADY_USED, the redemption went through.
+        if (
+            isinstance(result_data, dict)
+            and result_data.get("source") == "callback_success"
+            and result_data.get("order_no")
+            and result_data.get("order_no_hash")
+        ):
+            message = "Redeemed successfully."
+            if product_name:
+                message = f"Redeemed successfully: {product_name}."
+            logger.info(
+                "[REDEEM] confirmed by Midasbuy success callback order_no=%s",
+                result_data.get("order_no"),
+            )
+            return RedeemResponse(
+                success=True,
+                message=message,
+                raw={"result": result_data},
+            )
+
+        # Some SDK paths do not expose the success callback to the caller.
+        # For those ambiguous outcomes, re-querying the code is the definitive
+        # false-positive-proof check.
         logger.info("[REDEEM] verifying redemption by re-querying the code")
         verify = await query_code_info(
             player_id, pin_code, country_code, storage_state_path, cookies, zone_id,
