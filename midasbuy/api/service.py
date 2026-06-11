@@ -83,7 +83,12 @@ async def _api_call(
 
     session_dir = os.path.dirname(storage_state_path)
 
-    browser_only_endpoints = {
+    # Opt-in: when MIDASBUY_PURE_HTTP is set, route getCharac/QueryRedeemCodeInfo
+    # through the no-browser path (Node xMidas + httpx). It falls back to the
+    # browser automatically if encryption or the transport fails (e.g. the edge
+    # 403s a non-browser client), so enabling it can never break the flow.
+    pure_http = os.getenv("MIDASBUY_PURE_HTTP", "0") in ("1", "true", "True")
+    browser_only_endpoints = set() if pure_http else {
         "/interface/getCharac",
         _QUERY_REDEEM_ENDPOINT,
     }

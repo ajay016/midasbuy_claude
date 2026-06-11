@@ -1426,6 +1426,66 @@ def close_cached_browser_sessions() -> None:
             _close_cached_session(session)
 
 
+def _persist_xmidas_material(page, context, session_dir: str, country_code: str) -> None:
+    """
+    Snapshot the live xMidas token + public-param material from a warmed page so
+    the no-browser path (api/crypto/crypto.py) can encrypt and POST on its own.
+
+    Writes:
+      xmidas_token.txt   the rotating <input id="xMidasToken"> value (= ctoken)
+      page_data.json     device_id / muid / tdrc_fp / appid / country / version
+    """
+    info = page.evaluate(
+        """() => {
+            const tok = document.getElementById('xMidasToken');
+            const ver = document.getElementById('xMidasVersion');
+            const sd  = window.SERVER_DATA || {};
+            return {
+                token:   (tok && tok.value) || '',
+                version: (ver && ver.value) || '1.0.1',
+                appid:   String(sd.appid || ''),
+                country: String(sd.country || ''),
+                muid:    String(sd.muid || ''),
+                area:    String(sd.midasbuyArea || ''),
+                currency:String((sd.payInfo && sd.payInfo.currency_type) || sd.currency_type || ''),
+                deviceId:String(sd.midasbuyDeviceId || sd.deviceId || ''),
+            };
+        }"""
+    ) or {}
+
+    token = (info.get("token") or "").strip()
+    if not token:
+        logger.debug("[CRYPTO] no live xMidas token to persist")
+        return
+
+    with open(os.path.join(session_dir, "xmidas_token.txt"), "w", encoding="utf-8") as f:
+        f.write(token)
+
+    uuid_cookie = ""
+    try:
+        for c in context.cookies():
+            if c.get("name") == "UUID" and c.get("value"):
+                uuid_cookie = c["value"]
+                break
+    except Exception:
+        pass
+
+    page_data = {
+        "midasbuyDeviceId": info.get("deviceId", ""),
+        "midasuid":         info.get("muid", ""),
+        "uuidCookie":       uuid_cookie,
+        "appid":            info.get("appid", "") or "1900000047",
+        "country":          info.get("country", "") or country_code,
+        "midasbuyArea":     info.get("area", ""),
+        "currency_type":    info.get("currency", "") or "USD",
+        "xMidasVersion":    info.get("version", "1.0.1"),
+    }
+    with open(os.path.join(session_dir, "page_data.json"), "w", encoding="utf-8") as f:
+        json.dump(page_data, f)
+
+    logger.info("[CRYPTO] persisted live xMidas token + page_data for no-browser path")
+
+
 def warm_cached_session(
     storage_state_path: str,
     country_code: str = "bd",
@@ -1493,6 +1553,14 @@ def _create_cached_session(
 
         if not _wait_for_xmidas(page, session_dir, timeout_ms):
             raise RuntimeError("xMidas did not become ready")
+
+        # Persist the live (rotating) xMidas token + public-param material so the
+        # opt-in no-browser path (MIDASBUY_PURE_HTTP) can encrypt/POST without a
+        # browser. Best-effort: never fail the warm-up over this.
+        try:
+            _persist_xmidas_material(page, context, session_dir, country_code)
+        except Exception as exc:
+            logger.debug("[CRYPTO] could not persist xMidas material: %s", exc)
 
         now = time.time()
         return _CachedBrowserSession(
