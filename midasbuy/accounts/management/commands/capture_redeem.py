@@ -33,50 +33,6 @@ _FULL_BODY_HINTS = (
 # Resource types whose bodies we skip (too big / not useful).
 _SKIP_BODY_TYPES = {"image", "font", "media", "stylesheet"}
 
-# Appended to the served Chaos VM script (runs in the MAIN JS world, where
-# window.xMidas actually lives). Patchright runs add_init_script in an ISOLATED
-# world, so a setter hook registered there never sees the page's own
-# Object.defineProperty assignment of window.xMidas — hence we must wrap it here,
-# inside the same script that the page trusts. We poll until the VM has assigned
-# window.xMidas, wrap it with a recorder that pushes each call's plaintext input
-# (arguments[0]) into sessionStorage['__xmidasCalls'] (survives the confirm
-# navigation to /result/pubgm), then lock it non-configurable.
-_CHAOS_VM_RECORD = b"""
-;(function(){
-    var KEY = '__xmidasCalls';
-    function record(arg){
-        try {
-            var arr = JSON.parse(sessionStorage.getItem(KEY) || '[]');
-            var v; try { v = JSON.parse(JSON.stringify(arg)); } catch(e){ v = String(arg); }
-            arr.push(v);
-            sessionStorage.setItem(KEY, JSON.stringify(arr));
-        } catch(e) {}
-    }
-    function wrap(fn){
-        var w = function(){ record(arguments[0]); return fn.apply(this, arguments); };
-        try { w.__wrapped = true; } catch(e) {}
-        return w;
-    }
-    function lock(fn){
-        try {
-            Object.defineProperty(window, 'xMidas', {
-                get: function(){ return fn; },
-                set: function(){},
-                configurable: false,
-                enumerable: true,
-            });
-        } catch(e) {}
-    }
-    var _cur = window.xMidas;
-    if (typeof _cur === 'function') { lock(wrap(_cur)); return; }
-    var _t = setInterval(function(){
-        var f = window.xMidas;
-        if (typeof f === 'function') { clearInterval(_t); lock(wrap(f)); }
-    }, 10);
-    setTimeout(function(){ clearInterval(_t); }, 30000);
-})();
-"""
-
 
 class Command(BaseCommand):
     help = "Open a headful Midasbuy redeem page with full network capture to debug the redemption commit."
@@ -94,9 +50,9 @@ class Command(BaseCommand):
     def handle(self, *args, **opts):
         from accounts.models import MidasbuyAccount
         from accounts.services.playwright_crypto import (
-            _CHAOS_VM_LOCAL_PATH,
             _get_playwright,
             _launch_context,
+            _setup_chaos_vm_protection,
             _wait_for_xmidas,
         )
 
@@ -111,15 +67,11 @@ class Command(BaseCommand):
         country = opts["country"]
         out_dir = os.path.dirname(ssp)
         cap_path = os.path.join(out_dir, "redeem_commit_capture.txt")
-        xmidas_path = os.path.join(out_dir, "xmidas_inputs.txt")
         # Same URL the working crypto flow uses, so window.xMidas initialises.
         redeem_url = f"https://www.midasbuy.com/midasbuy/{country}/redeem/pubgm?from=self.midasbuy_saas"
 
         with open(cap_path, "w", encoding="utf-8") as f:
             f.write(f"# redeem commit capture  account={opts['account_id']}  {time.ctime()}\n")
-        # Fresh dedicated file for the xMidas plaintext inputs (one JSON per line).
-        with open(xmidas_path, "w", encoding="utf-8") as f:
-            f.write("")
 
         def dump(line: str):
             try:
@@ -140,42 +92,35 @@ class Command(BaseCommand):
             # snapshot) but headful, so the real page's player lookup / encryption works.
             browser, context = _launch_context(p, ssp, country, headless=False)
             page = context.new_page()
+            _setup_chaos_vm_protection(page)
 
-            # Serve the Chaos VM script with a RECORDING wrapper appended so we
-            # capture the plaintext window.xMidas encrypts. This must run in the
-            # MAIN world (patchright init scripts run isolated and never see the
-            # page's own Object.defineProperty assignment of window.xMidas), so we
-            # append it to the trusted VM script itself — mirroring the working
-            # flow's _setup_chaos_vm_protection, but recording instead of just
-            # locking.
-            def _serve_recording_vm(route):
-                try:
-                    with open(_CHAOS_VM_LOCAL_PATH, "rb") as vf:
-                        original = vf.read()
-                    route.fulfill(
-                        status=200,
-                        headers={
-                            "content-type": "application/javascript; charset=utf-8",
-                            "cache-control": "no-cache",
-                        },
-                        body=original + _CHAOS_VM_RECORD,
-                    )
-                    self.stdout.write("  chaos VM served with xMidas recorder")
-                    return
-                except Exception as e:
-                    self.stdout.write(self.style.WARNING(f"  local chaos VM unavailable ({e}) — fetching from CDN"))
-                try:
-                    response = route.fetch()
-                    hdrs = dict(response.headers)
-                    hdrs.pop("content-length", None)
-                    route.fulfill(status=response.status, headers=hdrs, body=response.body() + _CHAOS_VM_RECORD)
-                except Exception:
-                    try:
-                        route.continue_()
-                    except Exception:
-                        pass
-
-            page.route("**cdn.midasbuy.com/js/x-midas/**", _serve_recording_vm)
+            # Hook window.xMidas to record the PLAINTEXT it encrypts. Persist to
+            # sessionStorage so it survives the confirm navigation to /result/pubgm
+            # (which otherwise wipes a window-level array).
+            context.add_init_script(r"""
+            () => {
+              try {
+                var KEY = '__xmidasCalls';
+                function record(arg){
+                  try {
+                    var arr = JSON.parse(sessionStorage.getItem(KEY) || '[]');
+                    var v; try { v = JSON.parse(JSON.stringify(arg)); } catch(e){ v = String(arg); }
+                    arr.push(v);
+                    sessionStorage.setItem(KEY, JSON.stringify(arr));
+                  } catch(e) {}
+                }
+                var _v = null;
+                function wrap(fn){
+                  return function(){ record(arguments[0]); return fn.apply(this, arguments); };
+                }
+                Object.defineProperty(window, 'xMidas', {
+                  configurable: true, enumerable: true,
+                  get: function(){ return _v; },
+                  set: function(f){ _v = (typeof f === 'function') ? wrap(f) : f; },
+                });
+              } catch(e) {}
+            }
+            """)
 
             def on_request(req):
                 try:
@@ -261,15 +206,8 @@ class Command(BaseCommand):
                             "() => { try { return JSON.parse(sessionStorage.getItem('__xmidasCalls') || '[]'); } catch(e) { return []; } }"
                         )
                         for c in calls[dumped_xmidas:]:
-                            payload = json.dumps(c)
-                            dump("\n[XMIDAS-INPUT] " + payload[:8000])
-                            # Also write to a dedicated file that is easy to find/push.
-                            try:
-                                with open(xmidas_path, "a", encoding="utf-8") as xf:
-                                    xf.write(payload + "\n")
-                            except Exception:
-                                pass
-                            self.stdout.write(self.style.SUCCESS("  captured xMidas input -> xmidas_inputs.txt"))
+                            dump("\n[XMIDAS-INPUT] " + json.dumps(c)[:8000])
+                            self.stdout.write("  captured xMidas input")
                         dumped_xmidas = len(calls)
                     except Exception:
                         pass
@@ -291,7 +229,4 @@ class Command(BaseCommand):
                 except Exception:
                     pass
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Done. Full capture: {cap_path}\n"
-            f"      xMidas plaintext inputs: {xmidas_path}  <-- push this one"
-        ))
+        self.stdout.write(self.style.SUCCESS(f"Done. Capture saved to: {cap_path}"))
