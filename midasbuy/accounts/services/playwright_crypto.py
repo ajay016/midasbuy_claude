@@ -1426,6 +1426,35 @@ def close_cached_browser_sessions() -> None:
             _close_cached_session(session)
 
 
+def warm_cached_session(
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 60_000,
+) -> bool:
+    """
+    Pre-build the cached browser session (launch + navigate + xMidas ready) so
+    the first real API call does not pay the cold-start cost.
+
+    Best-effort: returns True if a usable session is ready, False otherwise.
+    MUST run on the browser executor thread (Playwright sync objects are
+    thread-affine and the cached session is created/used there).
+    """
+    try:
+        _get_or_create_cached_session(storage_state_path, country_code, timeout_ms)
+        logger.info(
+            "[CRYPTO] warm-up complete storage=%s country=%s",
+            storage_state_path, country_code,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "[CRYPTO] warm-up failed storage=%s country=%s: %s",
+            storage_state_path, country_code, exc,
+        )
+        return False
+
+
+
 def _create_cached_session(
     storage_state_path: str,
     country_code: str,
