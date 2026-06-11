@@ -55,16 +55,18 @@ _CACHED_ENDPOINTS = {
     "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
 }
 
-# Local copy of the Chaos VM CDN script (served via page.route to avoid CDN latency)
+# Local copy of the Chaos VM CDN script (served via page.route to avoid CDN
+# latency). Vendored inside the project (accounts/services/assets/) so the app
+# is self-contained and never reaches into the repo-root inspection files.
 _CHAOS_VM_LOCAL_PATH = os.path.normpath(
     os.path.join(
-        os.path.dirname(__file__), "..", "..", "..",
+        os.path.dirname(__file__), "assets",
         "kEc9hjFh5DQJbz_iPEWrfFxadMVk4PbLDS-5P8jE73pfdUuDwNGKNVZjdEztcHdofAVaHXo6zRGXgLwuvsK_afAEj6w_mKyiUmq-7AesIRU~.js",
     )
 )
 _MIDAS_SDK_LOCAL_PATH = os.path.normpath(
     os.path.join(
-        os.path.dirname(__file__), "..", "..", "..",
+        os.path.dirname(__file__), "assets",
         "midas-oversea-h5page.js",
     )
 )
