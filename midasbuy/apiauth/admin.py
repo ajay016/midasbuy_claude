@@ -1,34 +1,14 @@
-import secrets
-
-from django import forms
 from django.contrib import admin, messages
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.forms import UserCreationForm
 
-from .models import ApiKey, Merchant
+from .models import ApiKey, User
 
 
-class MerchantAdminForm(forms.ModelForm):
-    """Admin form that lets you set a password when creating/editing a merchant."""
-    new_password = forms.CharField(
-        required=False,
-        widget=forms.PasswordInput,
-        help_text="Set or replace the merchant's panel-login password.",
-    )
-
+class UserCreateForm(UserCreationForm):
     class Meta:
-        model = Merchant
-        fields = ["name", "email", "is_active"]
-
-    def save(self, commit=True):
-        merchant = super().save(commit=False)
-        pwd = self.cleaned_data.get("new_password")
-        if pwd:
-            merchant.set_password(pwd)
-        elif not merchant.password:
-            # Created without a password: assign a random one (login disabled until reset).
-            merchant.set_password(secrets.token_urlsafe(32))
-        if commit:
-            merchant.save()
-        return merchant
+        model = User
+        fields = ("email", "name")
 
 
 class ApiKeyInline(admin.TabularInline):
@@ -39,22 +19,42 @@ class ApiKeyInline(admin.TabularInline):
     can_delete = True
 
 
-@admin.register(Merchant)
-class MerchantAdmin(admin.ModelAdmin):
-    form = MerchantAdminForm
-    list_display = ("id", "name", "email", "is_active", "created_at")
-    list_filter = ("is_active",)
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    add_form = UserCreateForm
+    model = User
+    ordering = ("-created_at",)
+    list_display = ("id", "name", "email", "role", "is_active", "created_at")
+    list_filter = ("role", "is_active", "can_order", "can_use_api")
     search_fields = ("name", "email")
+    readonly_fields = ("created_at", "updated_at", "last_login")
     inlines = [ApiKeyInline]
     actions = ["generate_api_key"]
 
+    fieldsets = (
+        (None, {"fields": ("email", "password")}),
+        ("Profile", {"fields": ("name",)}),
+        ("Role & capabilities", {
+            "fields": ("role", "can_order", "can_manage_accounts", "can_use_api"),
+        }),
+        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser",
+                                    "groups", "user_permissions")}),
+        ("Timestamps", {"fields": ("last_login", "created_at", "updated_at")}),
+    )
+    add_fieldsets = (
+        (None, {
+            "classes": ("wide",),
+            "fields": ("email", "name", "role", "password1", "password2"),
+        }),
+    )
+
     @admin.action(description="Generate a new API key (secret shown once)")
     def generate_api_key(self, request, queryset):
-        for merchant in queryset:
-            key, secret = ApiKey.generate(merchant, label="admin-generated")
+        for user in queryset:
+            key, secret = ApiKey.generate(user, label="admin-generated")
             self.message_user(
                 request,
-                f"{merchant.email} — key_id={key.key_id}  secret={secret}  "
+                f"{user.email} — key_id={key.key_id}  secret={secret}  "
                 f"(copy the secret now; it is not stored in readable form)",
                 level=messages.WARNING,
             )
@@ -62,7 +62,7 @@ class MerchantAdmin(admin.ModelAdmin):
 
 @admin.register(ApiKey)
 class ApiKeyAdmin(admin.ModelAdmin):
-    list_display = ("key_id", "merchant", "label", "is_active", "created_at", "last_used_at")
+    list_display = ("key_id", "user", "label", "is_active", "created_at", "last_used_at")
     list_filter = ("is_active",)
-    search_fields = ("key_id", "merchant__email")
+    search_fields = ("key_id", "user__email")
     readonly_fields = ("key_id", "secret_encrypted", "created_at", "last_used_at")

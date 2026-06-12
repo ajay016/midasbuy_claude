@@ -6,7 +6,7 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from apiauth.panel import current_merchant, manage_accounts_required
+from apiauth.panel import manage_accounts_required
 
 from .forms import MidasbuyAccountForm
 from .models import MidasbuyAccount
@@ -16,11 +16,7 @@ from .services.login_service import login_account_and_persist
 @manage_accounts_required
 def account_list(request):
     accounts = MidasbuyAccount.objects.all()
-    return render(
-        request,
-        "accounts/list.html",
-        {"accounts": accounts, "merchant": current_merchant(request)},
-    )
+    return render(request, "accounts/list.html", {"accounts": accounts})
 
 
 @manage_accounts_required
@@ -32,10 +28,7 @@ def account_add(request):
             return redirect("account_list")
     else:
         form = MidasbuyAccountForm()
-    return render(
-        request, "accounts/add.html",
-        {"form": form, "merchant": current_merchant(request)},
-    )
+    return render(request, "accounts/add.html", {"form": form})
 
 
 @manage_accounts_required

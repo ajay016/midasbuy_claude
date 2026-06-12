@@ -89,7 +89,7 @@ async def player_info(
     player_id:    str = Query(...),
     country_code: str = Query("bd"),
     account_id:   int | None = Query(None),
-    merchant:     dict = Depends(require_order),
+    identity:     dict = Depends(require_order),
 ):
     ssp, cookies = await _resolve_session(account_id)
     result = await get_player_info(player_id, country_code, ssp, cookies)
@@ -99,21 +99,21 @@ async def player_info(
 
 
 @api_app.post("/code-status", response_model=CodeActionResponse, tags=["single"])
-async def code_status(body: CodeActionRequest, merchant: dict = Depends(require_order)):
+async def code_status(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """Check one code for one player: valid / used / invalid. Does NOT redeem."""
     ssp, cookies = await _resolve_session(body.account_id)
     return await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
 
 
 @api_app.post("/redeem-now", response_model=CodeActionResponse, tags=["single"])
-async def redeem_now(body: CodeActionRequest, merchant: dict = Depends(require_order)):
+async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """All-in-one: look up player -> validate code -> redeem, in a single call."""
     ssp, cookies = await _resolve_session(body.account_id)
     return await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
 
 
 @api_app.post("/redeem", response_model=RedeemResponse, tags=["single"])
-async def redeem(body: RedeemRequest, merchant: dict = Depends(require_order)):
+async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
     """Interactive two-step flow used by the panel (validate, then confirm)."""
     ssp, cookies = await _resolve_session(body.account_id)
     return await submit_redeem(

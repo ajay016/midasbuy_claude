@@ -49,6 +49,12 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "midasbuy_project.urls"
 
+# Our own model replaces Django's default auth.User — it's the single identity for
+# the panel (session auth), the API (JWT/HMAC), and the admin site.
+AUTH_USER_MODEL = "apiauth.User"
+# Where @login_required and the panel decorators send anonymous users.
+LOGIN_URL = "panel_login"
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -118,7 +124,7 @@ APIAUTH_FERNET_KEY = env("APIAUTH_FERNET_KEY", default="")
 # Secret used to sign outgoing webhook payloads (X-Webhook-Signature). Defaults to
 # JWT_SECRET. Receivers verify HMAC-SHA256(WEBHOOK_SECRET, raw_body).
 WEBHOOK_SECRET = env("WEBHOOK_SECRET", default=JWT_SECRET)
-# Merchants are created from the Django admin, so public self-registration is OFF
+# Users are created by an admin (panel or Django admin), so self-registration is OFF
 # by default. Set to True only if you want an open POST /api/auth/register.
 APIAUTH_OPEN_REGISTRATION = env.bool("APIAUTH_OPEN_REGISTRATION", default=False)
 

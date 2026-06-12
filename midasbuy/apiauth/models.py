@@ -1,44 +1,59 @@
 """
-Merchants and their API credentials.
+The project's custom user model and API credentials.
 
-A Merchant is a customer of this API. They authenticate two ways, both resolving
-to the same Merchant:
+`User` REPLACES Django's default `auth.User` (via `AUTH_USER_MODEL = "apiauth.User"`).
+It is the single identity for everything:
 
-  * Dashboard / browser  -> email + password -> short-lived JWT
-  * Server-to-server      -> ApiKey (key id + secret) -> HMAC-signed requests
+  * Panel / browser  -> Django session auth -> `request.user` IS a User
+  * Server-to-server -> ApiKey (key id + secret) -> HMAC-signed requests
 
-Passwords are hashed with Django's password hashers (slow, salted) — we never
-need them back. API secrets are different: HMAC verification must recompute the
-signature, so the secret has to be recoverable. We therefore store it ENCRYPTED
-(Fernet, key held outside the DB) instead of hashed — a DB-only leak yields
-nothing usable.
+Three kinds of people share the table, distinguished by `role` (admin/staff/client)
+plus granular capability flags. Always gate on the `allowed_to_*` helpers, which
+fold in "admin (or Django superuser) implies everything".
+
+Passwords are hashed (AbstractBaseUser). API secrets must be recoverable to verify
+HMAC signatures, so they're stored ENCRYPTED (Fernet, key outside the DB), not hashed.
 """
 import secrets
 
-from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    BaseUserManager,
+    PermissionsMixin,
+)
 from django.db import models
 
 from .security import decrypt_secret, encrypt_secret
 
 
-class Merchant(models.Model):
-    """A panel user / API customer.
+class UserManager(BaseUserManager):
+    """Manager so `createsuperuser` and programmatic creation work with email login."""
 
-    One table backs three kinds of people, distinguished by ``role``:
+    use_in_migrations = True
 
-      * ``admin``  — full access: manages users, bot accounts, API keys, and can
-                     order. Every capability flag is implied True regardless of
-                     its stored value.
-      * ``staff``  — operates the panel. May order ONLY if granted ``can_order``;
-                     never manages users.
-      * ``client`` — a customer. Limited menu; orders if allowed, and gets API
-                     access only when ``can_use_api`` is on (their subscription).
+    def _create(self, email, password, **extra):
+        if not email:
+            raise ValueError("Users must have an email address.")
+        user = self.model(email=self.normalize_email(email), **extra)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
 
-    Capability flags are checked through the ``allowed_to_*`` helpers below, which
-    fold in the "admin implies everything" rule — always gate on those, never on
-    the raw boolean, so a new admin is never accidentally locked out.
-    """
+    def create_user(self, email, password=None, **extra):
+        extra.setdefault("role", User.ROLE_CLIENT)
+        extra.setdefault("is_staff", False)
+        extra.setdefault("is_superuser", False)
+        return self._create(email, password, **extra)
 
+    def create_superuser(self, email, password=None, **extra):
+        extra.setdefault("role", User.ROLE_ADMIN)
+        extra["is_staff"] = True
+        extra["is_superuser"] = True
+        extra["is_active"] = True
+        return self._create(email, password, **extra)
+
+
+class User(AbstractBaseUser, PermissionsMixin):
     ROLE_ADMIN = "admin"
     ROLE_STAFF = "staff"
     ROLE_CLIENT = "client"
@@ -50,12 +65,10 @@ class Merchant(models.Model):
 
     name = models.CharField(max_length=120)
     email = models.EmailField(unique=True)
-    password = models.CharField(max_length=255)  # hashed, never plaintext
-    is_active = models.BooleanField(default=True)
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_CLIENT)
 
-    # Granular capabilities (ignored for admins, who get everything).
+    # Granular capabilities (ignored for admins/superusers, who get everything).
     can_order = models.BooleanField(
         default=False, help_text="May look up players and redeem (panel + API)."
     )
@@ -66,8 +79,19 @@ class Merchant(models.Model):
         default=False, help_text="May create API keys and call the API directly."
     )
 
+    # Required by Django's auth / admin.
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(
+        default=False, help_text="Can log into the Django admin site."
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = UserManager()
+
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["name"]  # prompted by createsuperuser, besides email + password
 
     class Meta:
         ordering = ["-created_at"]
@@ -75,16 +99,10 @@ class Merchant(models.Model):
     def __str__(self):
         return f"{self.name} <{self.email}>"
 
-    def set_password(self, raw_password: str) -> None:
-        self.password = make_password(raw_password)
-
-    def check_password(self, raw_password: str) -> bool:
-        return check_password(raw_password, self.password)
-
     # ── Role helpers ───────────────────────────────────────────────────────────
     @property
     def is_admin(self) -> bool:
-        return self.role == self.ROLE_ADMIN
+        return self.role == self.ROLE_ADMIN or self.is_superuser
 
     @property
     def role_label(self) -> str:
@@ -120,7 +138,7 @@ class Merchant(models.Model):
 
 
 class ApiKey(models.Model):
-    merchant = models.ForeignKey(Merchant, on_delete=models.CASCADE, related_name="api_keys")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_keys")
     key_id = models.CharField(max_length=48, unique=True, db_index=True)  # public id
     secret_encrypted = models.TextField()                                  # Fernet token
     label = models.CharField(max_length=120, blank=True, default="")
@@ -133,15 +151,15 @@ class ApiKey(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.key_id} ({self.merchant.email})"
+        return f"{self.key_id} ({self.user.email})"
 
     @classmethod
-    def generate(cls, merchant: "Merchant", label: str = "") -> tuple["ApiKey", str]:
+    def generate(cls, user: "User", label: str = "") -> tuple["ApiKey", str]:
         """Create a key and return (instance, plaintext_secret). Secret shown ONCE."""
         key_id = "mk_" + secrets.token_hex(16)
         secret = "sk_" + secrets.token_urlsafe(32)
         obj = cls.objects.create(
-            merchant=merchant,
+            user=user,
             key_id=key_id,
             secret_encrypted=encrypt_secret(secret),
             label=label,

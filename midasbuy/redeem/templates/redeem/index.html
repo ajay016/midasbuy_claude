@@ -3,14 +3,14 @@
 
 {% block content %}
 <div class="page-head">
-  <h1 style="text-align:left;">Welcome, {{ merchant.name }}</h1>
+  <h1 style="text-align:left;">Welcome, {{ user.name }}</h1>
   <div class="sub">
-    {% if merchant.allowed_to_order %}Look up a player and redeem a UC code below.
+    {% if user.allowed_to_order %}Look up a player and redeem a UC code below.
     {% else %}Here's what your account has access to.{% endif %}
   </div>
 </div>
 
-{% if merchant.allowed_to_order %}
+{% if user.allowed_to_order %}
 <div class="card narrow" style="margin:0;">
     <h1>Redeem Your UC Code</h1>
     <p class="subtitle">Select a logged-in account, look up your player, then redeem</p>
@@ -23,14 +23,14 @@
                     <option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>
                 {% endfor %}
             </select>
-            {% if merchant.allowed_to_manage_accounts %}
+            {% if user.allowed_to_manage_accounts %}
               <a href="{% url 'account_list' %}" class="manage-link">Manage -></a>
             {% endif %}
         </div>
     {% else %}
         <div class="no-accounts">
             No logged-in Midasbuy accounts found.
-            {% if merchant.allowed_to_manage_accounts %}
+            {% if user.allowed_to_manage_accounts %}
               <a href="{% url 'account_add' %}">Add an account</a> and log in first.
             {% else %}
               Ask an admin to add and log in a bot account.
@@ -102,7 +102,7 @@
       the sidebar. Need to place orders or get API access? Ask an admin to enable it.
     </p>
   </div>
-  {% if merchant.allowed_to_use_api %}
+  {% if user.allowed_to_use_api %}
   <div class="card">
     <div class="account-name">API access</div>
     <p class="account-email" style="margin-top:8px;line-height:1.6;">
@@ -116,7 +116,7 @@
 {% endblock %}
 
 {% block scripts %}
-{% if merchant.allowed_to_order %}
+{% if user.allowed_to_order %}
 <script>
     let verifiedPlayerId = null;
     let verifiedPlayerZoneId = "1";

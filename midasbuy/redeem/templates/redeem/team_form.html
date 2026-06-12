@@ -76,7 +76,7 @@
       <button type="submit" class="btn btn-primary" style="width:100%;">{% if obj %}Save changes{% else %}Create user{% endif %}</button>
     </form>
 
-    {% if obj and obj.pk != merchant.pk %}
+    {% if obj and obj.pk != user.pk %}
     <hr class="divider" />
     <form method="post" action="{% url 'team_delete' obj.pk %}" onsubmit="return confirm('Delete {{ obj.name|escapejs }}? This cannot be undone.');">
       {% csrf_token %}

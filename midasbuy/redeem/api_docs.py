@@ -305,12 +305,12 @@ GROUPS = [
         "endpoints": [
             {
                 "id": "login", "method": "POST", "path": "/api/auth/login", "auth": False,
-                "title": "Login", "desc": "Exchange merchant credentials for a JWT.",
+                "title": "Login", "desc": "Exchange account credentials for a JWT.",
                 "params": [
-                    ("email", "body · string", "Merchant email"),
-                    ("password", "body · string", "Merchant password"),
+                    ("email", "body · string", "Account email"),
+                    ("password", "body · string", "Account password"),
                 ],
-                "request": {"email": "merchant@company.com", "password": "••••••••"},
+                "request": {"email": "user@company.com", "password": "••••••••"},
                 "response": {"access_token": "eyJhbGciOi...", "refresh_token": "eyJhbGciOi...",
                              "token_type": "bearer"},
             },

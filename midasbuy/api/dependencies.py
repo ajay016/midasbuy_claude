@@ -5,10 +5,10 @@ A request authenticates with EITHER:
   * Authorization: Bearer <jwt>            (dashboard / browser users), or
   * X-Api-Key + X-Timestamp + X-Nonce + X-Signature   (server-to-server HMAC).
 
-Both resolve to the same Merchant. Use it on a route with:
+Both resolve to the same User. Use it on a route with:
 
     @api_app.get("/whatever")
-    async def handler(merchant: dict = Depends(require_auth)):
+    async def handler(identity: dict = Depends(require_auth)):
         ...
 """
 import logging
@@ -37,16 +37,18 @@ def _nonce_unused(key_id: str, nonce: str, window: int) -> bool:
 
 
 def _auth_jwt(token: str):
-    from apiauth.models import Merchant
+    from django.contrib.auth import get_user_model
+
     from apiauth.security import decode_token
 
-    merchant_id = decode_token(token, expected_type="access")
-    if not merchant_id:
+    user_id = decode_token(token, expected_type="access")
+    if not user_id:
         return None
-    m = Merchant.objects.filter(pk=merchant_id, is_active=True).first()
-    if not m:
+    User = get_user_model()
+    u = User.objects.filter(pk=user_id, is_active=True).first()
+    if not u:
         return None
-    return {"merchant_id": m.id, "name": m.name, "auth": "jwt", **m.capabilities()}
+    return {"user_id": u.id, "name": u.name, "auth": "jwt", **u.capabilities()}
 
 
 def _auth_hmac(headers: dict, method: str, path: str, query: str, body: bytes):
@@ -69,10 +71,10 @@ def _auth_hmac(headers: dict, method: str, path: str, query: str, body: bytes):
     if not timestamp_fresh(timestamp):
         return None
 
-    key = ApiKey.objects.select_related("merchant").filter(
+    key = ApiKey.objects.select_related("user").filter(
         key_id=key_id, is_active=True
     ).first()
-    if not key or not key.merchant.is_active:
+    if not key or not key.user.is_active:
         return None
 
     # Block replays BEFORE doing the (cheap) signature check.
@@ -83,8 +85,8 @@ def _auth_hmac(headers: dict, method: str, path: str, query: str, body: bytes):
     if not verify_signature(key.get_secret(), canonical, signature):
         return None
 
-    return {"merchant_id": key.merchant_id, "name": key.merchant.name, "auth": "hmac",
-            "key_id": key_id, **key.merchant.capabilities()}
+    return {"user_id": key.user_id, "name": key.user.name, "auth": "hmac",
+            "key_id": key_id, **key.user.capabilities()}
 
 
 def _authenticate(method: str, path: str, query: str, body: bytes, headers: dict):
@@ -120,10 +122,10 @@ def require_capability(flag: str, detail: str):
     (403) check on top, so an authenticated user who lacks the capability is told
     so explicitly rather than getting a vague 401.
     """
-    async def _dep(merchant: dict = Depends(require_auth)) -> dict:
-        if not merchant.get(flag):
+    async def _dep(identity: dict = Depends(require_auth)) -> dict:
+        if not identity.get(flag):
             raise HTTPException(status_code=403, detail=detail)
-        return merchant
+        return identity
 
     return _dep
 

@@ -66,10 +66,10 @@ def decrypt_secret(token: str) -> str:
 
 
 # ── JWT ────────────────────────────────────────────────────────────────────────
-def _make_token(merchant_id: int, token_type: str, ttl: int) -> str:
+def _make_token(user_id: int, token_type: str, ttl: int) -> str:
     now = int(time.time())
     payload = {
-        "sub": str(merchant_id),
+        "sub": str(user_id),
         "type": token_type,
         "iat": now,
         "exp": now + ttl,
@@ -77,16 +77,16 @@ def _make_token(merchant_id: int, token_type: str, ttl: int) -> str:
     return jwt.encode(payload, _jwt_secret(), algorithm=ALGORITHM)
 
 
-def make_access_token(merchant_id: int) -> str:
-    return _make_token(merchant_id, "access", ACCESS_TTL)
+def make_access_token(user_id: int) -> str:
+    return _make_token(user_id, "access", ACCESS_TTL)
 
 
-def make_refresh_token(merchant_id: int) -> str:
-    return _make_token(merchant_id, "refresh", REFRESH_TTL)
+def make_refresh_token(user_id: int) -> str:
+    return _make_token(user_id, "refresh", REFRESH_TTL)
 
 
 def decode_token(token: str, expected_type: str = "access") -> Optional[int]:
-    """Return merchant_id if the token is valid and of the expected type, else None."""
+    """Return user_id if the token is valid and of the expected type, else None."""
     try:
         payload = jwt.decode(token, _jwt_secret(), algorithms=[ALGORITHM])
     except jwt.PyJWTError:

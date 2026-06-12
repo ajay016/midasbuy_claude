@@ -1,7 +1,8 @@
 # API Authentication
 
 Every `/api/*` data endpoint requires authentication. There are two ways in, both
-resolving to the same **Merchant** (panel user / API customer):
+resolving to the same **User** (panel user / API customer — the project's custom
+`AUTH_USER_MODEL`):
 
 | Caller | Method | How |
 |--------|--------|-----|
@@ -13,7 +14,7 @@ accounts are created by an admin in the panel (Team & Clients) or with the
 `create_admin` management command for the first admin.
 
 ## Roles & capabilities
-A Merchant has a `role` and capability flags, enforced on **both** the panel and
+A User has a `role` and capability flags, enforced on **both** the panel and
 the API (server-side, not just hidden menus):
 
 | Role | Order (lookup/redeem/bulk) | Manage bot accounts | Manage users | API access |

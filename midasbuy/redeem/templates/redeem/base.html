@@ -23,7 +23,7 @@
           Dashboard
         </a>
 
-        {% if merchant.allowed_to_manage_accounts %}
+        {% if user.allowed_to_manage_accounts %}
         <div class="nav-section">Operations</div>
         <a href="{% url 'account_list' %}" class="{% if url_name == 'account_list' or url_name == 'account_add' %}active{% endif %}">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 14 0v1"/></svg>
@@ -31,7 +31,7 @@
         </a>
         {% endif %}
 
-        {% if merchant.allowed_to_use_api %}
+        {% if user.allowed_to_use_api %}
         <div class="nav-section">Developer</div>
         <a href="{% url 'my_api_keys' %}" class="{% if url_name == 'my_api_keys' %}active{% endif %}">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.5 7.5a4.5 4.5 0 1 1-6.5 6.5 4.5 4.5 0 0 1 6.5-6.5zM15 7l3 3"/></svg>
@@ -43,7 +43,7 @@
         </a>
         {% endif %}
 
-        {% if merchant.allowed_to_manage_users %}
+        {% if user.allowed_to_manage_users %}
         <div class="nav-section">Administration</div>
         <a href="{% url 'team_list' %}" class="{% if url_name == 'team_list' or url_name == 'team_add' or url_name == 'team_edit' %}active{% endif %}">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -54,10 +54,10 @@
       {% endwith %}
 
       <div class="side-foot">
-        {% if merchant %}
+        {% if user.is_authenticated %}
         <div class="side-user">
-          <div class="u-name">{{ merchant.name }} <span class="role-pill {{ merchant.role }}">{{ merchant.role_label }}</span></div>
-          <div class="u-mail">{{ merchant.email }}</div>
+          <div class="u-name">{{ user.name }} <span class="role-pill {{ user.role }}">{{ user.role_label }}</span></div>
+          <div class="u-mail">{{ user.email }}</div>
         </div>
         {% endif %}
         <a href="{% url 'panel_logout' %}" class="btn btn-outline" style="width:100%;margin-top:8px;">Logout</a>
