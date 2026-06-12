@@ -8,11 +8,15 @@ django.setup()
 from asgiref.sync import sync_to_async
 from fastapi import FastAPI, HTTPException, Query
 
+from .bulk_routes import router as bulk_router
 from .schemas import PlayerLookupResponse, RedeemRequest, RedeemResponse
 from .service import get_player_info, submit_redeem
 
 logger = logging.getLogger(__name__)
 api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
+
+# Bulk operations (player-info / validate / redeem) live under /api/bulk/*
+api_app.include_router(bulk_router)
 
 
 @api_app.on_event("shutdown")

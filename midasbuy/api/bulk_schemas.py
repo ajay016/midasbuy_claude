@@ -1,0 +1,55 @@
+"""Pydantic schemas for the bulk endpoints."""
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+# ── Requests ───────────────────────────────────────────────────────────────────
+class BulkPlayerInfoRequest(BaseModel):
+    account_id: int = Field(..., description="Logged-in MidasbuyAccount to use")
+    country_code: str = Field("bd", description="ISO country / storefront code")
+    player_ids: list[str] = Field(..., min_length=1, description="PUBG Mobile UIDs to look up")
+
+
+class CodeItem(BaseModel):
+    player_id: str = Field(..., description="PUBG Mobile UID")
+    pin_code: str = Field(..., description="UC redeem pin code")
+    zone_id: str = Field("1", description="Zone ID (filled from lookup if omitted)")
+
+
+class BulkCodeRequest(BaseModel):
+    account_id: int = Field(..., description="Logged-in MidasbuyAccount to use")
+    country_code: str = Field("bd", description="ISO country / storefront code")
+    items: list[CodeItem] = Field(..., min_length=1, description="player_id + pin_code pairs")
+
+
+# ── Responses ──────────────────────────────────────────────────────────────────
+class BulkJobResponse(BaseModel):
+    job_id: int
+    job_type: str
+    status: str
+    account_id: Optional[int]
+    country_code: str
+    total_items: int
+    processed_items: int
+    succeeded_items: int
+    failed_items: int
+    progress_percent: int
+    created_at: datetime
+
+
+class BulkJobItemResponse(BaseModel):
+    id: int
+    player_id: str
+    pin_code: str
+    zone_id: str
+    status: str
+    success: bool
+    message: str
+    username: str
+    product_name: str
+
+
+class BulkJobDetailResponse(BulkJobResponse):
+    items: list[BulkJobItemResponse] = []

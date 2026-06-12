@@ -1,0 +1,34 @@
+# Keep the build context (and image) small.
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime data — mounted as volumes, never baked into the image
+midasbuy_sessions/
+*.sqlite3
+db.sqlite3
+staticfiles/
+
+# Secrets & local files (compose injects .env at runtime via env_file)
+.env
+.env.*
+!.env.example
+
+# Debug / capture artifacts
+*.log
+*.har
+xmidas_inputs.txt
+redeem_commit_capture.txt
+.DS_Store

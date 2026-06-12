@@ -1,7 +1,23 @@
 db.sqlite3
+db.sqlite3-journal
 __pycache__/
 *.pyc
 *.pyo
-midasbuy_sessions/
 *.png
 *.html.bak
+midasbuy_sessions/
+staticfiles/
+*.log
+.venv/
+venv/
+
+# Secrets — keep .env.example, never commit the real .env
+.env
+.env.*
+!.env.example
+
+# Debug / capture artifacts
+*.har
+xmidas_inputs.txt
+redeem_commit_capture.txt
+.DS_Store

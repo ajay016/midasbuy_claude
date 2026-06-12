@@ -1,0 +1,58 @@
+# Midasbuy — local/dev stack.
+#
+# PostgreSQL is NOT in here on purpose: it runs on your Windows host, and the
+# containers reach it via host.docker.internal (set DB_HOST=host.docker.internal
+# in .env). `extra_hosts` makes that name resolve on Linux servers too, so the
+# same compose file works in production.
+#
+#   docker compose build
+#   docker compose run --rm web python manage.py migrate
+#   docker compose up
+#
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: midasbuy_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile            # slim, no browser
+    container_name: midasbuy_web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0  # talk to the redis service, not localhost
+    volumes:
+      - .:/app                          # live code reload in dev
+      - ./midasbuy_sessions:/app/midasbuy_sessions
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: uvicorn midasbuy_project.asgi:application --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker     # Celery + Chromium
+    image: midasbuy_worker
+    container_name: midasbuy_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - .:/app
+      - ./midasbuy_sessions:/app/midasbuy_sessions
+      - /dev/shm:/dev/shm               # Chromium needs a big /dev/shm
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: xvfb-run -a celery -A midasbuy_project worker -l info --concurrency=2
