@@ -5,9 +5,22 @@
 # in .env). `extra_hosts` makes that name resolve on Linux servers too, so the
 # same compose file works in production.
 #
+# First run:
 #   docker compose build
-#   docker compose run --rm web python manage.py migrate
-#   docker compose up
+#   docker compose run --rm web python manage.py migrate   # one-off, before `up`
+#   docker compose up -d
+#
+# Day-to-day (containers already running via `up`):
+#   docker compose exec web python manage.py migrate       # reuse the running web
+#   docker compose exec web python manage.py createsuperuser
+#
+# `run --rm` = spin up a brand-new throwaway container for one command (works
+#               even when nothing is `up`; --rm deletes it afterwards).
+# `exec`      = run the command INSIDE the already-running container (needs `up`
+#               first; faster, shares that container's state).
+#
+# Log an account in (needs the browser -> the WORKER, with a virtual display):
+#   docker compose exec worker xvfb-run -a python manage.py login_account 1
 #
 services:
   redis:
