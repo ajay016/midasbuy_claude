@@ -1,32 +1,53 @@
-import secrets
-
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 
 from accounts.models import MidasbuyAccount
+from apiauth.panel import (
+    current_merchant,
+    ensure_dev_merchant,
+    login_merchant,
+    logout_merchant,
+    merchant_required,
+)
 
 
-def _panel_api_token() -> str:
-    """
-    Mint a short-lived JWT so the panel's browser JS can call the now-authenticated
-    /api endpoints. The panel runs as a dedicated internal Merchant. When real
-    merchant login lands, mint the logged-in merchant's token here instead.
-    """
-    from apiauth.models import Merchant
+def login_view(request):
+    """Merchant login for the panel (email + password against the Merchant model)."""
+    if current_merchant(request):
+        return redirect("index")
+
+    dev = ensure_dev_merchant()  # only returns creds in DEBUG
+    error = ""
+    if request.method == "POST":
+        from apiauth.models import Merchant
+
+        email = (request.POST.get("email") or "").strip().lower()
+        password = request.POST.get("password") or ""
+        merchant = Merchant.objects.filter(email=email, is_active=True).first()
+        if merchant and merchant.check_password(password):
+            login_merchant(request, merchant)
+            return redirect("index")
+        error = "Invalid email or password."
+
+    return render(request, "redeem/login.html", {"error": error, "dev": dev})
+
+
+def logout_view(request):
+    logout_merchant(request)
+    return redirect("panel_login")
+
+
+@merchant_required
+def index(request):
     from apiauth.security import make_access_token
 
-    merchant, created = Merchant.objects.get_or_create(
-        email="panel@system.local", defaults={"name": "Panel"},
-    )
-    if created:
-        merchant.set_password(secrets.token_urlsafe(32))
-        merchant.save(update_fields=["password"])
-    return make_access_token(merchant.id)
-
-
-def index(request):
+    merchant = current_merchant(request)
     accounts = MidasbuyAccount.objects.filter(status=1)  # logged-in accounts only
     return render(
         request,
         "redeem/index.html",
-        {"accounts": accounts, "api_token": _panel_api_token()},
+        {
+            "accounts": accounts,
+            "merchant": merchant,
+            "api_token": make_access_token(merchant.id),
+        },
     )

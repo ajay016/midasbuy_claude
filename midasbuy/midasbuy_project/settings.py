@@ -124,6 +124,7 @@ APIAUTH_OPEN_REGISTRATION = env.bool("APIAUTH_OPEN_REGISTRATION", default=False)
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
