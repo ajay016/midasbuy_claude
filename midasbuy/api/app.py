@@ -11,8 +11,14 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
 from .dependencies import require_auth
-from .schemas import PlayerLookupResponse, RedeemRequest, RedeemResponse
-from .service import get_player_info, submit_redeem
+from .schemas import (
+    CodeActionRequest,
+    CodeActionResponse,
+    PlayerLookupResponse,
+    RedeemRequest,
+    RedeemResponse,
+)
+from .service import check_code_status, get_player_info, redeem_all_in_one, submit_redeem
 
 logger = logging.getLogger(__name__)
 api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
@@ -92,8 +98,23 @@ async def player_info(
     return result
 
 
-@api_app.post("/redeem", response_model=RedeemResponse)
+@api_app.post("/code-status", response_model=CodeActionResponse, tags=["single"])
+async def code_status(body: CodeActionRequest, merchant: dict = Depends(require_auth)):
+    """Check one code for one player: valid / used / invalid. Does NOT redeem."""
+    ssp, cookies = await _resolve_session(body.account_id)
+    return await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+
+
+@api_app.post("/redeem-now", response_model=CodeActionResponse, tags=["single"])
+async def redeem_now(body: CodeActionRequest, merchant: dict = Depends(require_auth)):
+    """All-in-one: look up player -> validate code -> redeem, in a single call."""
+    ssp, cookies = await _resolve_session(body.account_id)
+    return await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+
+
+@api_app.post("/redeem", response_model=RedeemResponse, tags=["single"])
 async def redeem(body: RedeemRequest, merchant: dict = Depends(require_auth)):
+    """Interactive two-step flow used by the panel (validate, then confirm)."""
     ssp, cookies = await _resolve_session(body.account_id)
     return await submit_redeem(
         body.player_id,

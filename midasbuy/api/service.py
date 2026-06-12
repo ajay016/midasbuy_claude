@@ -541,3 +541,85 @@ async def submit_redeem(
         product_id=product_id or None,
         raw=check.raw,
     )
+
+
+# ── All-in-one helpers (single source of truth for single + bulk) ──────────────
+def _code_status_from_query(check: RedeemResponse) -> str:
+    """Map a (confirm=False) query result to valid | used | invalid."""
+    if check.confirmation_required:
+        return "valid"
+    raw = check.raw or {}
+    err = str(raw.get("err_code") or "")
+    return "used" if err == "REDEEM_CODE_ALREADY_USED" else "invalid"
+
+
+async def check_code_status(
+    player_id: str,
+    pin_code: str,
+    country_code: str,
+    storage_state_path: Optional[str],
+    cookies: Optional[str],
+    zone_id: str = "1",
+) -> dict:
+    """Look the player up, then report whether the code is valid / used / invalid.
+    Does NOT redeem. Returns a normalised dict."""
+    info = await get_player_info(player_id, country_code, storage_state_path, cookies)
+    if not info.success or not info.player:
+        return {"status": "player_not_found", "success": False,
+                "message": info.error or "Invalid player id.", "raw": {}}
+
+    zid = info.player.zone_id or zone_id or "1"
+    check = await submit_redeem(
+        player_id, pin_code, country_code, storage_state_path, cookies, zid, confirm=False,
+    )
+    status = _code_status_from_query(check)
+    return {
+        "status": status,
+        "success": status == "valid",
+        "message": check.message,
+        "username": info.player.username,
+        "product_name": check.product_name or "",
+        "zone_id": zid,
+        "raw": check.raw or {},
+    }
+
+
+async def redeem_all_in_one(
+    player_id: str,
+    pin_code: str,
+    country_code: str,
+    storage_state_path: Optional[str],
+    cookies: Optional[str],
+    zone_id: str = "1",
+) -> dict:
+    """Full flow in one call: look up player -> validate code -> redeem.
+    Returns a normalised dict with a clear `status`."""
+    info = await get_player_info(player_id, country_code, storage_state_path, cookies)
+    if not info.success or not info.player:
+        return {"success": False, "status": "player_not_found",
+                "message": info.error or "Invalid player id.", "raw": {}}
+
+    zid = info.player.zone_id or zone_id or "1"
+    username = info.player.username
+
+    check = await submit_redeem(
+        player_id, pin_code, country_code, storage_state_path, cookies, zid, confirm=False,
+    )
+    if not check.confirmation_required:
+        status = _code_status_from_query(check)  # used | invalid
+        return {"success": False, "status": status, "message": check.message,
+                "username": username, "raw": check.raw or {}}
+
+    done = await submit_redeem(
+        player_id, pin_code, country_code, storage_state_path, cookies, zid,
+        confirm=True, product_name=check.product_name, product_id=check.product_id,
+    )
+    return {
+        "success": bool(done.success),
+        "status": "redeemed" if done.success else "failed",
+        "message": done.message,
+        "username": username,
+        "product_name": check.product_name or "",
+        "zone_id": zid,
+        "raw": done.raw or {},
+    }

@@ -594,12 +594,17 @@
             return result;
         }
 
+        // Short-lived token minted by the Django view so the panel can call the
+        // now-authenticated /api endpoints. Reload the page if it expires (15 min).
+        const API_TOKEN = "{{ api_token|escapejs }}";
+        function authHeaders(extra) {
+            return Object.assign({ "Authorization": "Bearer " + API_TOKEN }, extra || {});
+        }
+
         async function postRedeem(payload) {
             const resp = await fetch("/api/redeem", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 body: JSON.stringify(payload),
             });
             const data = await resp.json();
@@ -646,7 +651,8 @@
 
         async function fetchPlayerInfo(playerId, country, accountId) {
             const resp = await fetch(
-                `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}&account_id=${accountId}`
+                `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}&account_id=${accountId}`,
+                { headers: authHeaders() }
             );
             const data = await resp.json();
 

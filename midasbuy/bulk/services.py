@@ -76,71 +76,15 @@ def process_player_info(player_id: str, country_code: str, ssp: str, cookies: st
 
 def process_validate(player_id: str, pin_code: str, country_code: str,
                      ssp: str, cookies: str, zone_id: str = "1") -> dict:
-    """Look the player up, then check whether the code is valid (no redeem)."""
-    from api.service import get_player_info, submit_redeem
+    """Look the player up, then check whether the code is valid/used (no redeem)."""
+    from api.service import check_code_status
 
-    info = _run(get_player_info(player_id, country_code, ssp, cookies))
-    if not info.success or not info.player:
-        return {"success": False, "message": info.error or "Player not found.", "raw": {}}
-
-    zid = info.player.zone_id or zone_id or "1"
-    check = _run(submit_redeem(
-        player_id, pin_code, country_code, ssp, cookies, zid, confirm=False,
-    ))
-    # submit_redeem(confirm=False) returns confirmation_required=True for a valid code.
-    if check.confirmation_required:
-        return {
-            "success": True,
-            "message": check.message or "Code is valid.",
-            "username": info.player.username,
-            "product_name": check.product_name or "",
-            "zone_id": zid,
-            "raw": check.raw or {},
-        }
-    return {
-        "success": False,
-        "message": check.message or "Code is not valid.",
-        "username": info.player.username,
-        "raw": check.raw or {},
-    }
+    return _run(check_code_status(player_id, pin_code, country_code, ssp, cookies, zone_id))
 
 
 def process_redeem(player_id: str, pin_code: str, country_code: str,
                    ssp: str, cookies: str, zone_id: str = "1") -> dict:
     """Full flow: look up player -> validate code -> redeem."""
-    from api.service import get_player_info, submit_redeem
+    from api.service import redeem_all_in_one
 
-    info = _run(get_player_info(player_id, country_code, ssp, cookies))
-    if not info.success or not info.player:
-        return {"success": False, "message": info.error or "Player not found.", "raw": {}}
-
-    zid = info.player.zone_id or zone_id or "1"
-    username = info.player.username
-
-    # Step 1: validate (also yields product_name / product_id for the commit).
-    check = _run(submit_redeem(
-        player_id, pin_code, country_code, ssp, cookies, zid, confirm=False,
-    ))
-    if not check.confirmation_required:
-        return {
-            "success": False,
-            "message": check.message or "Code is not valid; nothing redeemed.",
-            "username": username,
-            "raw": check.raw or {},
-        }
-
-    # Step 2: commit the redemption.
-    done = _run(submit_redeem(
-        player_id, pin_code, country_code, ssp, cookies, zid,
-        confirm=True,
-        product_name=check.product_name,
-        product_id=check.product_id,
-    ))
-    return {
-        "success": bool(done.success),
-        "message": done.message,
-        "username": username,
-        "product_name": check.product_name or "",
-        "zone_id": zid,
-        "raw": done.raw or {},
-    }
+    return _run(redeem_all_in_one(player_id, pin_code, country_code, ssp, cookies, zone_id))

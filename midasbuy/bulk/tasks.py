@@ -72,6 +72,7 @@ def run_bulk_job(self, job_id: int):
             job.error = "No valid session for this account. Log the account in first."
             job.finished_at = timezone.now()
             job.save(update_fields=["status", "error", "finished_at"])
+            _deliver_webhook(job)
             return {"job_id": job_id, "status": job.status}
 
         for item in job.items.filter(status=ItemStatus.PENDING).iterator():
@@ -85,6 +86,7 @@ def run_bulk_job(self, job_id: int):
             "[BULK] job %s done: %s/%s succeeded",
             job_id, job.succeeded_items, job.total_items,
         )
+        _deliver_webhook(job)
         return {
             "job_id": job_id,
             "status": job.status,
@@ -129,3 +131,55 @@ def _process_item(job: BulkJob, item: BulkJobItem, ssp: str, cookies: str):
         succeeded_items=F("succeeded_items") + (1 if item.success else 0),
         failed_items=F("failed_items") + (0 if item.success else 1),
     )
+
+
+def _deliver_webhook(job: BulkJob) -> None:
+    """POST the finished job result to job.webhook_url with an HMAC signature.
+    Best-effort: a webhook failure never fails the job."""
+    if not job.webhook_url:
+        return
+
+    import json
+
+    import httpx
+
+    from apiauth.security import webhook_signature
+
+    def _item(i):
+        return {
+            "id": i.id, "player_id": i.player_id, "pin_code": i.pin_code,
+            "zone_id": i.zone_id, "status": i.status, "success": i.success,
+            "message": i.message, "username": i.username, "product_name": i.product_name,
+        }
+
+    items = [_item(i) for i in job.items.order_by("id")]
+    payload = {
+        "job_id": job.id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "account_id": job.account_id,
+        "country_code": job.country_code,
+        "total_items": job.total_items,
+        "succeeded_items": job.succeeded_items,
+        "failed_items": job.failed_items,
+        "error": job.error,
+        "valid": [i for i in items if i["success"]],
+        "invalid": [i for i in items if not i["success"]],
+        "items": items,
+    }
+    body = json.dumps(payload, default=str).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": webhook_signature(body),
+        "X-Webhook-Event": "bulk_job.completed",
+    }
+    try:
+        resp = httpx.post(job.webhook_url, content=body, headers=headers, timeout=15.0)
+        delivered = resp.status_code < 400
+    except Exception:
+        logger.exception("[BULK] webhook POST failed for job %s", job.id)
+        delivered = False
+
+    if delivered:
+        BulkJob.objects.filter(pk=job.pk).update(webhook_delivered=True)
+        logger.info("[BULK] webhook delivered for job %s", job.id)

@@ -54,6 +54,11 @@ class BulkJob(models.Model):
     celery_task_id = models.CharField(max_length=255, blank=True, default="")
     error = models.TextField(blank=True, default="")
 
+    # Optional webhook: when the job finishes we POST the full result here so the
+    # client doesn't have to poll (panel users poll; API clients use the webhook).
+    webhook_url = models.URLField(blank=True, default="")
+    webhook_delivered = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

@@ -1,9 +1,11 @@
 """
 Bulk operation endpoints (mounted under /api/bulk).
 
-These endpoints are *non-blocking*: they create a job + its rows in the database,
-hand the job id to Celery, and return immediately. The browser work happens in a
-worker. Clients poll GET /api/bulk/jobs/{id} for progress and results.
+Non-blocking: each endpoint creates a job + its rows, hands the job id to Celery,
+and returns immediately. The browser work happens in a worker. Clients get the
+result two ways:
+  * polling   GET /api/bulk/jobs/{id}        (used by the panel)
+  * webhook   set webhook_url on the request (the finished result is POSTed, signed)
 """
 import logging
 
@@ -37,6 +39,7 @@ def _job_to_dict(job) -> dict:
         "succeeded_items": job.succeeded_items,
         "failed_items": job.failed_items,
         "progress_percent": job.progress_percent,
+        "webhook_url": job.webhook_url,
         "created_at": job.created_at,
     }
 
@@ -61,7 +64,8 @@ def _account_ok(account_id: int) -> bool:
     return MidasbuyAccount.objects.filter(pk=account_id).exists()
 
 
-def _create_job(job_type: str, account_id: int, country_code: str, rows: list[dict]) -> dict:
+def _create_job(job_type: str, account_id: int, country_code: str,
+                rows: list[dict], webhook_url: str = "") -> dict:
     """Create the job + items and enqueue the Celery task. Returns the job dict."""
     from bulk.models import BulkJob, BulkJobItem
     from bulk.tasks import run_bulk_job
@@ -71,6 +75,7 @@ def _create_job(job_type: str, account_id: int, country_code: str, rows: list[di
         account_id=account_id,
         country_code=country_code,
         total_items=len(rows),
+        webhook_url=webhook_url or "",
     )
     BulkJobItem.objects.bulk_create([
         BulkJobItem(
@@ -85,13 +90,18 @@ def _create_job(job_type: str, account_id: int, country_code: str, rows: list[di
     return _job_to_dict(job)
 
 
-def _get_job(job_id: int):
-    from bulk.models import BulkJob
+def _get_job_detail(job_id: int):
+    """Job dict + valid/invalid split + items, in one DB round-trip set."""
+    from bulk.models import BulkJob, BulkJobItem
 
     try:
-        return _job_to_dict(BulkJob.objects.get(pk=job_id))
+        job = BulkJob.objects.get(pk=job_id)
     except BulkJob.DoesNotExist:
         return None
+    items = [_item_to_dict(i) for i in BulkJobItem.objects.filter(job_id=job_id).order_by("id")]
+    valid = [i for i in items if i["success"]]
+    invalid = [i for i in items if not i["success"]]
+    return {**_job_to_dict(job), "items": items, "valid": valid, "invalid": invalid}
 
 
 def _get_items(job_id: int, limit: int, offset: int):
@@ -104,42 +114,55 @@ def _get_items(job_id: int, limit: int, offset: int):
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
-@router.post("/player-info", response_model=BulkJobResponse)
+@router.post("/player-info", response_model=BulkJobResponse,
+             summary="Bulk player lookup")
 async def bulk_player_info(body: BulkPlayerInfoRequest):
+    """Look up many player UIDs. Poll the job (or set webhook_url) for the
+    valid/invalid split."""
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": pid} for pid in body.player_ids]
-    return await sync_to_async(_create_job)("player_info", body.account_id, body.country_code, rows)
+    return await sync_to_async(_create_job)(
+        "player_info", body.account_id, body.country_code, rows, body.webhook_url or ""
+    )
 
 
-@router.post("/validate", response_model=BulkJobResponse)
-async def bulk_validate(body: BulkCodeRequest):
+@router.post("/code-status", response_model=BulkJobResponse,
+             summary="Bulk code status check (valid/used/invalid)")
+async def bulk_code_status(body: BulkCodeRequest):
+    """For one player, check many codes. Does NOT redeem."""
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
-    rows = [i.model_dump() for i in body.items]
-    return await sync_to_async(_create_job)("validate", body.account_id, body.country_code, rows)
+    rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}
+            for c in body.pin_codes]
+    return await sync_to_async(_create_job)(
+        "validate", body.account_id, body.country_code, rows, body.webhook_url or ""
+    )
 
 
-@router.post("/redeem", response_model=BulkJobResponse)
+@router.post("/redeem", response_model=BulkJobResponse, summary="Bulk redeem")
 async def bulk_redeem(body: BulkCodeRequest):
+    """For one player, redeem many codes (lookup -> validate -> redeem each)."""
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
-    rows = [i.model_dump() for i in body.items]
-    return await sync_to_async(_create_job)("redeem", body.account_id, body.country_code, rows)
+    rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}
+            for c in body.pin_codes]
+    return await sync_to_async(_create_job)(
+        "redeem", body.account_id, body.country_code, rows, body.webhook_url or ""
+    )
 
 
-@router.get("/jobs/{job_id}", response_model=BulkJobDetailResponse)
-async def get_job(job_id: int, include_items: bool = Query(True)):
-    job = await sync_to_async(_get_job)(job_id)
-    if job is None:
+@router.get("/jobs/{job_id}", response_model=BulkJobDetailResponse,
+            summary="Poll a job (status + valid/invalid + items)")
+async def get_job(job_id: int):
+    detail = await sync_to_async(_get_job_detail)(job_id)
+    if detail is None:
         raise HTTPException(404, f"job {job_id} not found")
-    items = []
-    if include_items:
-        items = await sync_to_async(_get_items)(job_id, 1000, 0) or []
-    return {**job, "items": items}
+    return detail
 
 
-@router.get("/jobs/{job_id}/items", response_model=list[BulkJobItemResponse])
+@router.get("/jobs/{job_id}/items", response_model=list[BulkJobItemResponse],
+            summary="Paginated items for a job")
 async def get_job_items(
     job_id: int,
     limit: int = Query(100, ge=1, le=1000),

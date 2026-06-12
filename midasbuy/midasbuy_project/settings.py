@@ -115,6 +115,12 @@ JWT_SECRET = env("JWT_SECRET", default=SECRET_KEY)
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # If unset, a stable key is derived from SECRET_KEY (fine for dev, set it in prod).
 APIAUTH_FERNET_KEY = env("APIAUTH_FERNET_KEY", default="")
+# Secret used to sign outgoing webhook payloads (X-Webhook-Signature). Defaults to
+# JWT_SECRET. Receivers verify HMAC-SHA256(WEBHOOK_SECRET, raw_body).
+WEBHOOK_SECRET = env("WEBHOOK_SECRET", default=JWT_SECRET)
+# Merchants are created from the Django admin, so public self-registration is OFF
+# by default. Set to True only if you want an open POST /api/auth/register.
+APIAUTH_OPEN_REGISTRATION = env.bool("APIAUTH_OPEN_REGISTRATION", default=False)
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

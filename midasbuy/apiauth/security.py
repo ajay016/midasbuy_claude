@@ -119,6 +119,13 @@ def verify_signature(secret: str, canonical: str, provided_signature: str) -> bo
     return hmac.compare_digest(expected, provided_signature or "")
 
 
+def webhook_signature(body: bytes) -> str:
+    """HMAC-SHA256 over the webhook body so the receiver can verify it's from us.
+    Receiver verifies: hex(HMAC_SHA256(WEBHOOK_SECRET, raw_body)) == X-Webhook-Signature."""
+    secret = getattr(settings, "WEBHOOK_SECRET", None) or _jwt_secret()
+    return hmac.new(secret.encode("utf-8"), body or b"", hashlib.sha256).hexdigest()
+
+
 def timestamp_fresh(timestamp: str, now: Optional[int] = None) -> bool:
     try:
         ts = int(timestamp)

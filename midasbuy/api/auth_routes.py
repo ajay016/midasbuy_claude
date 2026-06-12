@@ -129,6 +129,12 @@ def _revoke_api_key(merchant_id: int, key_id: str) -> bool:
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 @router.post("/register", response_model=TokenResponse)
 async def register(body: RegisterRequest):
+    from django.conf import settings
+
+    if not getattr(settings, "APIAUTH_OPEN_REGISTRATION", False):
+        raise HTTPException(
+            403, "Self-registration is disabled. Merchants are created by an admin."
+        )
     result = await sync_to_async(_register)(body.name, str(body.email), body.password)
     if "error" in result:
         raise HTTPException(409, result["error"])

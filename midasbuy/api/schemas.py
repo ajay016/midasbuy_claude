@@ -43,3 +43,19 @@ class RedeemResponse(BaseModel):
     challenge_url:         str | None = None
     risk_sdk_url:          str | None = None
     raw:                   dict | None = None
+
+
+class CodeActionRequest(BaseModel):
+    player_id:    str = Field(..., description="PUBG Mobile UID")
+    pin_code:     str = Field(..., description="UC redeem pin code")
+    country_code: str = Field("bd", description="ISO country code")
+    account_id:   int | None = Field(None, description="MidasbuyAccount ID to use")
+
+
+class CodeActionResponse(BaseModel):
+    success: bool
+    status:  str = Field(..., description="player_not_found | invalid | used | valid | redeemed | failed")
+    message: str
+    username:     str = ""
+    product_name: str = ""
+    raw:          dict | None = None
