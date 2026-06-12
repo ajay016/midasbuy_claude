@@ -37,6 +37,15 @@ def logout_view(request):
 
 
 @merchant_required
+def docs_view(request):
+    from .api_docs import build_context
+
+    ctx = build_context()
+    ctx["merchant"] = current_merchant(request)
+    return render(request, "redeem/docs.html", ctx)
+
+
+@merchant_required
 def index(request):
     from apiauth.security import make_access_token
 

@@ -17,6 +17,7 @@
         </div>
         <nav>
             {% if merchant %}<span class="who">{{ merchant.email }}</span>{% endif %}
+            <a href="{% url 'api_docs' %}" class="btn btn-ghost">API Docs</a>
             <a href="/accounts/" class="btn btn-ghost">Accounts</a>
             <a href="{% url 'panel_logout' %}" class="btn btn-outline">Logout</a>
         </nav>

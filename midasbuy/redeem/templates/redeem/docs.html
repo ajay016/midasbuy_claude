@@ -1,0 +1,134 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>API Reference · Midasbuy</title>
+    <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
+</head>
+<body class="docs-body">
+<div class="docs-shell">
+
+    <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+    <aside class="docs-side">
+        <div class="brand">
+            <span class="mark">M</span>
+            <span class="name">MIDAS<b>BUY</b></span>
+        </div>
+        <a href="/" class="nav-link back">← Back to panel</a>
+        {% for g in groups %}
+        <div class="nav-group">
+            <div class="nav-title">{{ g.title }}</div>
+            {% for ep in g.endpoints %}
+            <a class="nav-link" href="#{{ ep.id }}">
+                <span class="method {{ ep.method|lower }}">{{ ep.method }}</span> {{ ep.title }}
+            </a>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </aside>
+
+    <!-- ── Main ────────────────────────────────────────────────────────────── -->
+    <main class="docs-main">
+        <div class="docs-intro">
+            <h1>API Reference</h1>
+            <p>
+                Base URL <code>{{ host }}/api</code>. Every data endpoint needs a Bearer token
+                (see <a href="#login">Login</a>) or an HMAC-signed request with an API key.
+                Bulk calls return a job immediately — poll it or set a <code>webhook_url</code>.
+            </p>
+            <div class="pill-links">
+                <a class="btn btn-outline" href="/api/docs" target="_blank">Swagger UI ↗</a>
+                <a class="btn btn-ghost" href="/api/redoc" target="_blank">ReDoc ↗</a>
+                <a class="btn btn-ghost" href="/api/openapi.json" target="_blank">OpenAPI JSON ↗</a>
+            </div>
+        </div>
+
+        {% for g in groups %}
+        <section class="group-head">
+            <h2 id="{{ g.id }}">{{ g.title }}</h2>
+            <p>{{ g.blurb }}</p>
+        </section>
+
+        {% for ep in g.endpoints %}
+        <article class="endpoint" id="{{ ep.id }}">
+            <div class="endpoint-doc">
+                <div class="ep-head">
+                    <span class="method {{ ep.method|lower }}">{{ ep.method }}</span>
+                    <span class="ep-path">{{ ep.path }}</span>
+                </div>
+                <div class="ep-title">{{ ep.title }}</div>
+                <div class="ep-desc">{{ ep.desc }}</div>
+
+                {% if ep.params %}
+                <table class="params">
+                    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                    {% for name, type, desc in ep.params %}
+                        <tr><td class="name">{{ name }}</td><td class="type">{{ type }}</td><td>{{ desc }}</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+
+                {% if ep.response_pretty %}
+                <div class="doc-label">Response</div>
+                <pre class="json-block"><code class="language-json">{{ ep.response_pretty }}</code></pre>
+                {% endif %}
+
+                {% if ep.status_values %}
+                <div class="doc-label">Status values</div>
+                <div class="status-values">{{ ep.status_values }}</div>
+                {% endif %}
+            </div>
+
+            <div class="endpoint-code">
+                <div class="code-card">
+                    <div class="code-tabs">
+                        <button class="tab active" data-lang="python">Python</button>
+                        <button class="tab" data-lang="django">Django</button>
+                        <button class="tab" data-lang="laravel">Laravel</button>
+                        <button class="tab" data-lang="node">Node.js</button>
+                        <button class="copy">Copy</button>
+                    </div>
+                    <pre data-lang="python"><code class="language-python">{{ ep.samples.python }}</code></pre>
+                    <pre data-lang="django" hidden><code class="language-python">{{ ep.samples.django }}</code></pre>
+                    <pre data-lang="laravel" hidden><code class="language-php">{{ ep.samples.laravel }}</code></pre>
+                    <pre data-lang="node" hidden><code class="language-javascript">{{ ep.samples.node }}</code></pre>
+                </div>
+            </div>
+        </article>
+        {% endfor %}
+        {% endfor %}
+    </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup-templating.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-php.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script>
+    // Language tabs
+    document.querySelectorAll(".code-tabs .tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+            const card = tab.closest(".code-card");
+            const lang = tab.dataset.lang;
+            card.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+            card.querySelectorAll("pre[data-lang]").forEach((p) => { p.hidden = p.dataset.lang !== lang; });
+        });
+    });
+    // Copy active sample
+    document.querySelectorAll(".code-tabs .copy").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const card = btn.closest(".code-card");
+            const pre = card.querySelector("pre[data-lang]:not([hidden])");
+            navigator.clipboard.writeText(pre.innerText).then(() => {
+                btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1200);
+            });
+        });
+    });
+</script>
+</body>
+</html>
