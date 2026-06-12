@@ -1,12 +1,14 @@
-# ── Web / API stack ────────────────────────────────────────────────────────────
+# =============================================================================
+# Web / API stack
 # fastapi, starlette, pydantic and pydantic_core are VERSION-LOCKED to each other
 # (fastapi pins a starlette range; pydantic pins pydantic_core exactly). They are
 # bumped together as a known-good set, never individually.
-Django==6.0.5              # kept at 6.x per project; see note in chat about PyPI visibility
+# =============================================================================
+Django==6.0.5
 fastapi==0.136.3
-starlette==1.1.0           # bound by fastapi==0.136.3
+starlette==1.1.0
 pydantic==2.13.4
-pydantic_core==2.46.4      # bound exactly by pydantic==2.13.4
+pydantic_core==2.46.4
 uvicorn==0.49.0
 httpx==0.28.1
 httpcore==1.0.9
@@ -18,13 +20,17 @@ watchfiles==1.2.0
 httptools==0.8.0
 PyYAML==6.0.3
 
-# ── Browser automation ─────────────────────────────────────────────────────────
+# =============================================================================
+# Browser automation
+# =============================================================================
 patchright==1.60.1
 playwright==1.60.0
 pyee==13.0.1
 greenlet==3.5.1
 
-# ── Crypto / misc ──────────────────────────────────────────────────────────────
+# =============================================================================
+# Crypto / misc
+# =============================================================================
 pycryptodome==3.23.0
 python-dotenv==1.2.2
 certifi==2026.5.20
@@ -38,13 +44,17 @@ typing_extensions==4.15.0
 sqlparse==0.5.5
 tzdata==2026.2
 
-# ── API authentication ─────────────────────────────────────────────────────────
-PyJWT==2.10.1              # JWT access/refresh tokens for dashboard users
-cryptography==44.0.0       # Fernet encryption of API secrets at rest
-email-validator==2.2.0     # validates EmailStr fields in pydantic schemas
+# =============================================================================
+# API authentication
+# =============================================================================
+PyJWT==2.10.1
+cryptography==44.0.0
+email-validator==2.2.0
 
-# ── Bulk operations / background processing ────────────────────────────────────
-celery==5.6.3              # task queue; workers run the browser redeem jobs
-redis==6.4.0               # pinned to celery 5.6.3's supported redis-py (it does not yet support 7/8)
-django-environ==0.13.0     # typed .env management for Django settings
-psycopg2-binary==2.9.12    # PostgreSQL driver (self-contained wheel, no build deps)
+# =============================================================================
+# Bulk operations / background processing
+# =============================================================================
+celery==5.6.3
+redis==6.4.0
+django-environ==0.13.0
+psycopg2-binary==2.9.12
