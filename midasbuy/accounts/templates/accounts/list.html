@@ -1,62 +1,50 @@
-{% load static %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Midasbuy Accounts</title>
-  <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
-  <style> body { align-items: flex-start; } </style>
-</head>
-<body>
-  <div class="page">
-    <div class="topbar">
-      <div class="brand">
-        <span class="mark">M</span>
-        <span class="name">MIDAS<b>BUY</b> · Accounts</span>
-      </div>
-      <nav>
-        <a href="{% url 'account_add' %}" class="btn btn-primary">+ Add Account</a>
-        <a href="{% url 'api_docs' %}" class="btn btn-ghost">API Docs</a>
-        <a href="/" class="btn btn-ghost">← Redeem</a>
-        <a href="{% url 'panel_logout' %}" class="btn btn-outline">Logout</a>
-      </nav>
-    </div>
+{% extends "redeem/base.html" %}
+{% block title %}Bot Accounts · Midasbuy Panel{% endblock %}
 
-    {% if accounts %}
-    <div class="grid">
-      {% for acct in accounts %}
-      <div class="card" id="card-{{ acct.pk }}">
-        <div class="card-top">
-          <div>
-            <div class="account-name">{{ acct.label }}</div>
-            <div class="account-email">{{ acct.email }}</div>
-          </div>
-          <span class="badge {% if acct.status == 1 %}badge-green{% elif acct.status == 2 %}badge-red{% else %}badge-grey{% endif %}">
-            {{ acct.get_status_display }}
-          </span>
-        </div>
-        {% if acct.last_error %}
-        <div style="font-size:11px;color:#ff7a7a;margin-top:8px">{{ acct.last_error }}</div>
-        {% endif %}
-        <div class="card-actions">
-          <button class="btn btn-success" onclick="doLogin({{ acct.pk }}, this)">Login / Refresh</button>
-          <button class="btn btn-blue"    onclick="checkStatus({{ acct.pk }})">Check Session</button>
-          <form method="post" action="{% url 'account_delete' acct.pk %}" style="display:inline" onsubmit="return confirm('Delete this account?')">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-danger">Delete</button>
-          </form>
-        </div>
-      </div>
-      {% endfor %}
+{% block content %}
+  <div class="page-head" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+    <div>
+      <h1 style="text-align:left;">Bot Accounts</h1>
+      <div class="sub">Upstream Midasbuy accounts used to look up players and redeem.</div>
     </div>
-    {% else %}
-      <p class="empty">No accounts added yet. Click "Add Account" to get started.</p>
-    {% endif %}
+    <a href="{% url 'account_add' %}" class="btn btn-primary">+ Add Account</a>
   </div>
 
-  <div class="toast" id="toast"></div>
+  {% if accounts %}
+  <div class="grid">
+    {% for acct in accounts %}
+    <div class="card" id="card-{{ acct.pk }}">
+      <div class="card-top">
+        <div>
+          <div class="account-name">{{ acct.label }}</div>
+          <div class="account-email">{{ acct.email }}</div>
+        </div>
+        <span class="badge {% if acct.status == 1 %}badge-green{% elif acct.status == 2 %}badge-red{% else %}badge-grey{% endif %}">
+          {{ acct.get_status_display }}
+        </span>
+      </div>
+      {% if acct.last_error %}
+      <div style="font-size:11px;color:#ff8a8a;margin-top:8px">{{ acct.last_error }}</div>
+      {% endif %}
+      <div class="card-actions">
+        <button class="btn btn-success" onclick="doLogin({{ acct.pk }}, this)">Login / Refresh</button>
+        <button class="btn btn-blue"    onclick="checkStatus({{ acct.pk }})">Check Session</button>
+        <form method="post" action="{% url 'account_delete' acct.pk %}" style="display:inline" onsubmit="return confirm('Delete this account?')">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty">No accounts added yet. Click "Add Account" to get started.</p>
+  {% endif %}
 
+  <div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
 <script>
   function showToast(msg, ok) {
     const t = document.getElementById('toast');
@@ -64,19 +52,14 @@
     t.textContent = msg;
     setTimeout(() => t.className = 'toast', 4000);
   }
-
   function getCsrf() {
     return document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('csrftoken='))?.split('=')[1] || '';
   }
-
   async function doLogin(pk, btn) {
     btn.disabled = true;
     btn.textContent = 'Logging in…';
     try {
-      const r = await fetch(`/accounts/${pk}/login/`, {
-        method: 'POST',
-        headers: {'X-CSRFToken': getCsrf()}
-      });
+      const r = await fetch(`/accounts/${pk}/login/`, { method: 'POST', headers: {'X-CSRFToken': getCsrf()} });
       const d = await r.json();
       showToast(d.message, d.success);
       if (d.success) setTimeout(() => location.reload(), 1500);
@@ -87,7 +70,6 @@
       btn.textContent = 'Login / Refresh';
     }
   }
-
   async function checkStatus(pk) {
     try {
       const r = await fetch(`/accounts/${pk}/status/`);
@@ -99,5 +81,4 @@
     }
   }
 </script>
-</body>
-</html>
+{% endblock %}

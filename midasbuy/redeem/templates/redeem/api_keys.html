@@ -1,0 +1,44 @@
+{% extends "redeem/base.html" %}
+{% block title %}API Keys · Midasbuy Panel{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">API Keys</h1>
+  <div class="sub">Keys authenticate your server-to-server API calls. The secret signs each request and is never sent over the network — see the <a href="{% url 'api_docs' %}">API Docs</a>.</div>
+</div>
+
+{% if secret_once %}
+<div class="secret-reveal">
+  <h3>New API key — copy the secret now</h3>
+  <p>This secret is shown <b>once</b>. Store it somewhere safe; you'll use it to sign requests.</p>
+  <div>Key ID</div><code>{{ secret_once.key_id }}</code>
+  <div>Secret</div><code>{{ secret_once.secret }}</code>
+</div>
+{% endif %}
+
+<div class="card" style="max-width:720px;">
+  <form method="post" action="{% url 'my_apikey_create' %}" style="display:flex;gap:8px;margin-bottom:18px;">
+    {% csrf_token %}
+    <input type="text" name="label" placeholder="Label, e.g. prod-server" />
+    <button type="submit" class="btn btn-primary">Generate key</button>
+  </form>
+
+  {% for k in keys %}
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);">
+    <div>
+      <div class="key-row">{{ k.key_id }}</div>
+      <div class="muted" style="font-size:11px;">{{ k.label|default:'(no label)' }} · created {{ k.created_at|date:"M j, Y" }}</div>
+    </div>
+    {% if k.is_active %}
+      <form method="post" action="{% url 'my_apikey_revoke' k.key_id %}">
+        {% csrf_token %}<button class="btn btn-ghost" type="submit">Revoke</button>
+      </form>
+    {% else %}
+      <span class="badge badge-grey">Revoked</span>
+    {% endif %}
+  </div>
+  {% empty %}
+  <p class="muted" style="font-size:12px;">No keys yet. Generate one to start calling the API.</p>
+  {% endfor %}
+</div>
+{% endblock %}

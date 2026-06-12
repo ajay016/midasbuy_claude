@@ -19,11 +19,12 @@ from .bulk_schemas import (
     BulkJobResponse,
     BulkPlayerInfoRequest,
 )
-from .dependencies import require_auth
+from .dependencies import require_order
 
 logger = logging.getLogger("api")
-# Every /bulk/* route requires authentication (JWT or signed request).
-router = APIRouter(prefix="/bulk", tags=["bulk"], dependencies=[Depends(require_auth)])
+# Every /bulk/* route requires authentication AND the order capability
+# (JWT or signed request from a user permitted to place orders).
+router = APIRouter(prefix="/bulk", tags=["bulk"], dependencies=[Depends(require_order)])
 
 
 # ── Sync DB helpers (Django ORM is sync; call via sync_to_async) ───────────────

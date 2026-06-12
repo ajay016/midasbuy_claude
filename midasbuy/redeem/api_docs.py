@@ -139,13 +139,169 @@ def _indent(text: str, spaces: int) -> str:
     return "\n".join(out)
 
 
+# ── HMAC signing: the secure server-to-server scheme ───────────────────────────
+# These helpers are shown once under "Authentication → Client setup". Every data
+# endpoint sample below calls them, so clients copy the helper once and the rest
+# of the samples stay short — and, crucially, correct (sign the EXACT bytes sent).
+CLIENT_SETUP = {
+    "python": '''import hashlib, hmac, json, time, uuid, requests
+from urllib.parse import urlencode
+
+BASE   = "''' + HOST + '''"
+KEY_ID = "mk_..."   # from the panel -> API Keys
+SECRET = "sk_..."   # shown ONCE when the key was created
+
+def signed_request(method, path, *, params=None, json_body=None):
+    """Sign and send one API request. The secret never leaves your server."""
+    body  = b"" if json_body is None else json.dumps(json_body, separators=(",", ":")).encode()
+    query = urlencode(params) if params else ""
+    ts    = str(int(time.time()))
+    nonce = uuid.uuid4().hex
+    canonical = "\\n".join([method.upper(), path, query,
+                           hashlib.sha256(body).hexdigest(), ts, nonce])
+    sig = hmac.new(SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    headers = {"X-Api-Key": KEY_ID, "X-Timestamp": ts, "X-Nonce": nonce,
+               "X-Signature": sig, "Content-Type": "application/json"}
+    url = BASE + path + (("?" + query) if query else "")
+    return requests.request(method, url, data=body, headers=headers, timeout=30)''',
+
+    "django": '''import hashlib, hmac, json, time, uuid, requests
+from urllib.parse import urlencode
+from django.conf import settings   # set MIDASBUY_API_BASE / _KEY_ID / _SECRET
+
+def signed_request(method, path, *, params=None, json_body=None):
+    body  = b"" if json_body is None else json.dumps(json_body, separators=(",", ":")).encode()
+    query = urlencode(params) if params else ""
+    ts, nonce = str(int(time.time())), uuid.uuid4().hex
+    canonical = "\\n".join([method.upper(), path, query,
+                           hashlib.sha256(body).hexdigest(), ts, nonce])
+    sig = hmac.new(settings.MIDASBUY_API_SECRET.encode(), canonical.encode(),
+                   hashlib.sha256).hexdigest()
+    headers = {"X-Api-Key": settings.MIDASBUY_API_KEY_ID, "X-Timestamp": ts,
+               "X-Nonce": nonce, "X-Signature": sig, "Content-Type": "application/json"}
+    url = settings.MIDASBUY_API_BASE + path + (("?" + query) if query else "")
+    return requests.request(method, url, data=body, headers=headers, timeout=30)''',
+
+    "laravel": '''<?php
+use Illuminate\\Support\\Facades\\Http;
+
+// Reads config('services.midasbuy.*') — base, key_id, secret.
+function signedRequest(string $method, string $path, array $opts = []) {
+    $base   = config('services.midasbuy.base');
+    $keyId  = config('services.midasbuy.key_id');
+    $secret = config('services.midasbuy.secret');
+
+    $body  = isset($opts['json']) ? json_encode($opts['json'], JSON_UNESCAPED_SLASHES) : '';
+    $query = isset($opts['params']) ? http_build_query($opts['params']) : '';
+    $ts    = (string) time();
+    $nonce = bin2hex(random_bytes(16));
+    $canonical = implode("\\n", [strtoupper($method), $path, $query,
+                                 hash('sha256', $body), $ts, $nonce]);
+    $sig = hash_hmac('sha256', $canonical, $secret);
+
+    $url = $base . $path . ($query ? '?' . $query : '');
+    return Http::withHeaders([
+        'X-Api-Key'   => $keyId, 'X-Timestamp' => $ts, 'X-Nonce' => $nonce,
+        'X-Signature' => $sig,   'Content-Type' => 'application/json',
+    ])->withBody($body, 'application/json')->send(strtoupper($method), $url);
+}''',
+
+    "node": '''import crypto from "crypto";
+import axios from "axios";
+
+const BASE   = "''' + HOST + '''";
+const KEY_ID = "mk_...";   // from the panel -> API Keys
+const SECRET = "sk_...";   // shown ONCE when the key was created
+
+export async function signedRequest(method, path, { params, jsonBody } = {}) {
+  const body  = jsonBody === undefined ? "" : JSON.stringify(jsonBody);
+  const query = params ? new URLSearchParams(params).toString() : "";
+  const ts    = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomUUID().replace(/-/g, "");
+  const bodyHash  = crypto.createHash("sha256").update(body).digest("hex");
+  const canonical = [method.toUpperCase(), path, query, bodyHash, ts, nonce].join("\\n");
+  const sig = crypto.createHmac("sha256", SECRET).update(canonical).digest("hex");
+  const url = BASE + path + (query ? "?" + query : "");
+  return axios({ method, url, data: body, headers: {
+    "X-Api-Key": KEY_ID, "X-Timestamp": ts, "X-Nonce": nonce,
+    "X-Signature": sig, "Content-Type": "application/json" } });
+}''',
+}
+
+
+def _signed_samples(ep: dict) -> dict:
+    """Per-endpoint samples that call the signedRequest() helper from Client setup."""
+    method = ep["method"].upper()
+    path = ep["path"].replace("{job_id}", str(ep.get("path_example", "42")))
+    body = ep.get("request")
+    query = ep.get("query")
+
+    # Python
+    py = ["# signed_request() is defined under Authentication -> Client setup."]
+    call = [f'resp = signed_request("{method}", "{path}",']
+    if query is not None:
+        call.append("    params=" + _indent(_fmt(query, "python"), 4) + ",")
+    if body is not None:
+        call.append("    json_body=" + _indent(_fmt(body, "python"), 4) + ",")
+    call.append(")")
+    py += call + ["print(resp.status_code, resp.json())"]
+    python = "\n".join(py)
+
+    # Django (same helper, credentials from settings)
+    dj = ["# signed_request() reads credentials from settings (see Client setup).",
+          f'resp = signed_request("{method}", "{path}",']
+    if query is not None:
+        dj.append("    params=" + _indent(_fmt(query, "python"), 4) + ",")
+    if body is not None:
+        dj.append("    json_body=" + _indent(_fmt(body, "python"), 4) + ",")
+    dj += [")", "resp.raise_for_status()", "data = resp.json()"]
+    django = "\n".join(dj)
+
+    # Laravel
+    php = ["// signedRequest() is defined under Authentication -> Client setup."]
+    if query is not None:
+        php.append(f"$response = signedRequest('{method}', '{path}', [")
+        php.append("    'params' => " + _indent(_fmt(query, "php"), 4) + ",")
+        php.append("]);")
+    elif body is not None:
+        php.append(f"$response = signedRequest('{method}', '{path}', [")
+        php.append("    'json' => " + _indent(_fmt(body, "php"), 4) + ",")
+        php.append("]);")
+    else:
+        php.append(f"$response = signedRequest('{method}', '{path}');")
+    php.append("return $response->json();")
+    laravel = "\n".join(php)
+
+    # Node
+    js = ["// signedRequest() is defined under Authentication -> Client setup."]
+    opts = []
+    if query is not None:
+        opts.append("params: " + _fmt(query, "node"))
+    if body is not None:
+        opts.append("jsonBody: " + _indent(_fmt(body, "node"), 2))
+    if opts:
+        js.append(f'const {{ data }} = await signedRequest("{method}", "{path}", {{')
+        js.append("  " + ", ".join(opts) + ",")
+        js.append("});")
+    else:
+        js.append(f'const {{ data }} = await signedRequest("{method}", "{path}");')
+    js.append("console.log(data);")
+    node = "\n".join(js)
+
+    return {"python": python, "django": django, "laravel": laravel, "node": node}
+
+
 # ── The spec ───────────────────────────────────────────────────────────────────
 GROUPS = [
     {
         "id": "auth",
         "title": "Authentication",
-        "blurb": "Get a Bearer token with email + password, or create a server-to-server "
-                 "API key. Every data endpoint requires the token (or a signed request).",
+        "blurb": "Server-to-server clients authenticate by SIGNING each request with an API "
+                 "key (HMAC-SHA256) — the most secure scheme: the secret never travels over "
+                 "the network and captured requests can't be replayed. Create a key in the "
+                 "panel under API Keys (the secret is shown once), drop the Client-setup "
+                 "helper below into your code, and every endpoint sample calls it. (Browser "
+                 "dashboards may instead use a short-lived Bearer token from Login.)",
         "endpoints": [
             {
                 "id": "login", "method": "POST", "path": "/api/auth/login", "auth": False,
@@ -294,17 +450,21 @@ GROUPS = [
 
 def build_context() -> dict:
     """Expand the spec into render-ready data (adds samples + pretty JSON)."""
+    # Data endpoints are documented with the secure HMAC-signed helper; the auth
+    # endpoints (login / key creation) use plain calls since you have no key yet.
+    signed_groups = {"single", "bulk"}
     groups = []
     for g in GROUPS:
         eps = []
         for ep in g["endpoints"]:
+            sampler = _signed_samples if (g["id"] in signed_groups and ep.get("auth", True)) else _samples
             eps.append({
                 **ep,
                 "params": ep.get("params", []),
                 "request_pretty": _pretty(ep["request"]) if ep.get("request") is not None else None,
                 "query_pretty": _pretty(ep["query"]) if ep.get("query") is not None else None,
                 "response_pretty": _pretty(ep["response"]) if ep.get("response") is not None else None,
-                "samples": _samples(ep),
+                "samples": sampler(ep),
             })
         groups.append({**g, "endpoints": eps})
-    return {"groups": groups, "host": HOST}
+    return {"groups": groups, "host": HOST, "client_setup": CLIENT_SETUP}

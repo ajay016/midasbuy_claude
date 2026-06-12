@@ -1,17 +1,14 @@
-{% load static %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Add Midasbuy Account</title>
-  <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
-  <style> body { justify-content: center; } </style>
-</head>
-<body>
-<div class="card auth">
+{% extends "redeem/base.html" %}
+{% block title %}Add Bot Account · Midasbuy Panel{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <a href="{% url 'account_list' %}" class="back" style="text-align:left;display:inline-block;margin:0 0 10px;">&larr; Bot Accounts</a>
   <h1 style="text-align:left;">Add Midasbuy Account</h1>
-  <p class="subtitle" style="text-align:left;margin-bottom:22px;">Stored credentials are used to log the account into Midasbuy.</p>
+  <div class="sub">Stored credentials are used to log the account into Midasbuy.</div>
+</div>
+
+<div class="card" style="max-width:480px;">
   <form method="post">
     {% csrf_token %}
     {% for field in form %}
@@ -23,7 +20,5 @@
     {% endfor %}
     <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px;padding:13px;font-size:15px;">Save Account</button>
   </form>
-  <a href="{% url 'account_list' %}" class="back">← Back to accounts</a>
 </div>
-</body>
-</html>
+{% endblock %}

@@ -1,468 +1,333 @@
-{% load static %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PUBG UC Redeem - Midasbuy</title>
-    <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
-    <style> body { justify-content: center; } </style>
-</head>
-<body>
-  <div style="width:100%;max-width:500px;">
-    <div class="topbar">
-        <div class="brand">
-            <span class="mark">M</span>
-            <span class="name">MIDAS<b>BUY</b></span>
-        </div>
-        <nav>
-            {% if merchant %}<span class="who">{{ merchant.email }}</span>{% endif %}
-            <a href="{% url 'api_docs' %}" class="btn btn-ghost">API Docs</a>
-            <a href="/accounts/" class="btn btn-ghost">Accounts</a>
-            <a href="{% url 'panel_logout' %}" class="btn btn-outline">Logout</a>
-        </nav>
-    </div>
-    <div class="card narrow">
-        <div class="logo">
-            <div class="badge">
-                <svg viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
-                </svg>
-                <span>MIDASBUY / PUBG UC REDEEM</span>
-            </div>
-        </div>
+{% extends "redeem/base.html" %}
+{% block title %}Dashboard · Midasbuy Panel{% endblock %}
 
-        <h1>Redeem Your UC Code</h1>
-        <p class="subtitle">Select a logged-in account, look up your player, then redeem</p>
-
-        {% if accounts %}
-            <div class="account-bar">
-                <label for="accountSelect">Account:</label>
-                <select id="accountSelect">
-                    {% for acct in accounts %}
-                        <option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>
-                    {% endfor %}
-                </select>
-                <a href="/accounts/" class="manage-link">Manage -></a>
-            </div>
-        {% else %}
-            <div class="no-accounts">
-                No logged-in Midasbuy accounts found.
-                <a href="/accounts/add/">Add an account</a> and log in first.
-            </div>
-        {% endif %}
-
-        <div class="step">
-            <div class="step-label">
-                <div class="num">1</div>
-                <span>Enter PUBG Mobile Player ID</span>
-            </div>
-
-            <div class="input-row">
-                <input id="playerIdInput" type="text" placeholder="e.g. 5123456789" autocomplete="off" />
-                <select id="countrySelect">
-                    <option value="bd">BD</option>
-                    <option value="us">US</option>
-                    <option value="id">ID</option>
-                    <option value="ph">PH</option>
-                    <option value="my">MY</option>
-                    <option value="pk">PK</option>
-                    <option value="in">IN</option>
-                    <option value="tr">TR</option>
-                    <option value="br">BR</option>
-                    <option value="sa">SA</option>
-                </select>
-                <button class="btn btn-primary" id="lookupBtn" onclick="lookupPlayer()">Look Up</button>
-            </div>
-
-            <p class="hint">First lookup warms the browser; repeated lookups are faster.</p>
-
-            <div id="lookupStatus" class="status"></div>
-
-            <div id="playerCard" class="player-card">
-                <div class="player-row">
-                    <div>
-                        <div id="playerName" class="player-name">-</div>
-                        <div id="playerMeta" class="player-meta"></div>
-                    </div>
-                    <div id="playerIdBadge" class="player-id-badge"></div>
-                </div>
-            </div>
-        </div>
-
-        <hr class="divider" />
-
-        <div class="step">
-            <div class="step-label">
-                <div class="num">2</div>
-                <span>Enter Your UC Pin Code</span>
-            </div>
-
-            <input
-                id="pinInput"
-                type="text"
-                placeholder="e.g. ABCD-EFGH-1234-5678"
-                style="width: 100%; margin-bottom: 12px;"
-                autocomplete="off"
-            />
-
-            <button class="btn btn-redeem" id="redeemBtn" onclick="redeemCode()" disabled>
-                Redeem Now
-            </button>
-
-            <p class="hint">Redemption will use the same browser encryption engine.</p>
-
-            <div id="redeemStatus" class="status"></div>
-        </div>
-    </div>
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">Welcome, {{ merchant.name }}</h1>
+  <div class="sub">
+    {% if merchant.allowed_to_order %}Look up a player and redeem a UC code below.
+    {% else %}Here's what your account has access to.{% endif %}
   </div>
+</div>
 
-    <div id="confirmModal" class="modal-backdrop">
-        <div class="confirm-modal">
-            <h2>Confirm Redemption</h2>
-            <p>The code is valid. Confirm to submit the final Midasbuy redemption request for this player.</p>
-            <div id="confirmProduct" class="confirm-product">UC redeem code</div>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" type="button" onclick="closeConfirmModal()">Cancel</button>
-                <button class="btn btn-primary" id="confirmRedeemBtn" type="button" onclick="confirmRedeemCode()">
-                    Confirm
-                </button>
+{% if merchant.allowed_to_order %}
+<div class="card narrow" style="margin:0;">
+    <h1>Redeem Your UC Code</h1>
+    <p class="subtitle">Select a logged-in account, look up your player, then redeem</p>
+
+    {% if accounts %}
+        <div class="account-bar">
+            <label for="accountSelect">Account:</label>
+            <select id="accountSelect">
+                {% for acct in accounts %}
+                    <option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>
+                {% endfor %}
+            </select>
+            {% if merchant.allowed_to_manage_accounts %}
+              <a href="{% url 'account_list' %}" class="manage-link">Manage -></a>
+            {% endif %}
+        </div>
+    {% else %}
+        <div class="no-accounts">
+            No logged-in Midasbuy accounts found.
+            {% if merchant.allowed_to_manage_accounts %}
+              <a href="{% url 'account_add' %}">Add an account</a> and log in first.
+            {% else %}
+              Ask an admin to add and log in a bot account.
+            {% endif %}
+        </div>
+    {% endif %}
+
+    <div class="step">
+        <div class="step-label">
+            <div class="num">1</div>
+            <span>Enter PUBG Mobile Player ID</span>
+        </div>
+        <div class="input-row">
+            <input id="playerIdInput" type="text" placeholder="e.g. 5123456789" autocomplete="off" />
+            <select id="countrySelect">
+                <option value="bd">BD</option><option value="us">US</option>
+                <option value="id">ID</option><option value="ph">PH</option>
+                <option value="my">MY</option><option value="pk">PK</option>
+                <option value="in">IN</option><option value="tr">TR</option>
+                <option value="br">BR</option><option value="sa">SA</option>
+            </select>
+            <button class="btn btn-primary" id="lookupBtn" onclick="lookupPlayer()">Look Up</button>
+        </div>
+        <p class="hint">First lookup warms the browser; repeated lookups are faster.</p>
+        <div id="lookupStatus" class="status"></div>
+        <div id="playerCard" class="player-card">
+            <div class="player-row">
+                <div>
+                    <div id="playerName" class="player-name">-</div>
+                    <div id="playerMeta" class="player-meta"></div>
+                </div>
+                <div id="playerIdBadge" class="player-id-badge"></div>
             </div>
         </div>
     </div>
 
-    <script>
-        let verifiedPlayerId = null;
-        let verifiedPlayerZoneId = "1";
-        let riskSdkPromise = null;
-        let riskSdkUrl = null;
-        let pendingRedeemPayload = null;
+    <hr class="divider" />
 
-        function setStatus(elId, type, html) {
-            const el = document.getElementById(elId);
-            el.className = `status show ${type}`;
-            el.innerHTML = html;
+    <div class="step">
+        <div class="step-label">
+            <div class="num">2</div>
+            <span>Enter Your UC Pin Code</span>
+        </div>
+        <input id="pinInput" type="text" placeholder="e.g. ABCD-EFGH-1234-5678"
+               style="width: 100%; margin-bottom: 12px;" autocomplete="off" />
+        <button class="btn btn-redeem" id="redeemBtn" onclick="redeemCode()" disabled>Redeem Now</button>
+        <p class="hint">Redemption will use the same browser encryption engine.</p>
+        <div id="redeemStatus" class="status"></div>
+    </div>
+</div>
+
+<div id="confirmModal" class="modal-backdrop">
+    <div class="confirm-modal">
+        <h2>Confirm Redemption</h2>
+        <p>The code is valid. Confirm to submit the final Midasbuy redemption request for this player.</p>
+        <div id="confirmProduct" class="confirm-product">UC redeem code</div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" type="button" onclick="closeConfirmModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirmRedeemBtn" type="button" onclick="confirmRedeemCode()">Confirm</button>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="grid">
+  <div class="card">
+    <div class="account-name">Your access</div>
+    <p class="account-email" style="margin-top:8px;line-height:1.6;">
+      Your account doesn't have ordering enabled. You can still use anything shown in
+      the sidebar. Need to place orders or get API access? Ask an admin to enable it.
+    </p>
+  </div>
+  {% if merchant.allowed_to_use_api %}
+  <div class="card">
+    <div class="account-name">API access</div>
+    <p class="account-email" style="margin-top:8px;line-height:1.6;">
+      API access is enabled. Create keys under <a href="{% url 'my_api_keys' %}">API Keys</a>
+      and read the <a href="{% url 'api_docs' %}">API Docs</a>.
+    </p>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if merchant.allowed_to_order %}
+<script>
+    let verifiedPlayerId = null;
+    let verifiedPlayerZoneId = "1";
+    let riskSdkPromise = null;
+    let riskSdkUrl = null;
+    let pendingRedeemPayload = null;
+
+    function setStatus(elId, type, html) {
+        const el = document.getElementById(elId);
+        el.className = `status show ${type}`;
+        el.innerHTML = html;
+    }
+    function clearStatus(elId) {
+        const el = document.getElementById(elId);
+        el.className = "status";
+        el.innerHTML = "";
+    }
+    function getAccountId() {
+        const sel = document.getElementById("accountSelect");
+        return sel ? sel.value : null;
+    }
+
+    function loadRiskSdk(sdkUrl) {
+        if (window.midas && typeof window.midas.newRiskControl === "function") {
+            return Promise.resolve();
         }
+        if (riskSdkPromise && riskSdkUrl === sdkUrl) { return riskSdkPromise; }
+        riskSdkUrl = sdkUrl;
+        riskSdkPromise = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = sdkUrl;
+            script.async = true;
+            script.onload = () => {
+                if (window.midas && typeof window.midas.newRiskControl === "function") { resolve(); return; }
+                reject(new Error("Midasbuy security verification did not initialize."));
+            };
+            script.onerror = () => {
+                riskSdkPromise = null; riskSdkUrl = null;
+                reject(new Error("Could not load Midasbuy security verification."));
+            };
+            document.head.appendChild(script);
+        });
+        return riskSdkPromise;
+    }
 
-        function clearStatus(elId) {
-            const el = document.getElementById(elId);
-            el.className = "status";
-            el.innerHTML = "";
+    async function solveRiskChallenge(challengeUrl, sdkUrl) {
+        await loadRiskSdk(sdkUrl);
+        const result = await window.midas.newRiskControl(challengeUrl);
+        if (!result || !result.rc_token || !result.rc_uuid) {
+            throw new Error("Security verification was not completed.");
         }
+        return result;
+    }
 
-        function getAccountId() {
-            const sel = document.getElementById("accountSelect");
-            return sel ? sel.value : null;
+    const API_TOKEN = "{{ api_token|escapejs }}";
+    function authHeaders(extra) {
+        return Object.assign({ "Authorization": "Bearer " + API_TOKEN }, extra || {});
+    }
+
+    async function postRedeem(payload) {
+        const resp = await fetch("/api/redeem", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (!resp.ok) { throw new Error(data.detail || "Redeem request failed."); }
+        return data;
+    }
+
+    async function submitRedeemWithVerification(payload) {
+        let data = await postRedeem(payload);
+        for (let attempt = 0; attempt < 2 && data.verification_required; attempt += 1) {
+            if (!data.challenge_url) { throw new Error("Midasbuy did not provide a verification URL."); }
+            if (!data.risk_sdk_url) { throw new Error("Midasbuy did not provide its verification SDK."); }
+            setStatus("redeemStatus", "loading", '<span class="spinner"></span>Complete the Midasbuy security verification...');
+            const verification = await solveRiskChallenge(data.challenge_url, data.risk_sdk_url);
+            payload.rc_token = verification.rc_token;
+            payload.rc_uuid = verification.rc_uuid;
+            data = await postRedeem(payload);
         }
+        if (data.verification_required) { throw new Error("Midasbuy requested security verification again. Please retry."); }
+        return data;
+    }
 
-        function loadRiskSdk(sdkUrl) {
-            if (window.midas && typeof window.midas.newRiskControl === "function") {
-                return Promise.resolve();
-            }
+    async function fetchPlayerInfo(playerId, country, accountId) {
+        const resp = await fetch(
+            `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}&account_id=${accountId}`,
+            { headers: authHeaders() }
+        );
+        const data = await resp.json();
+        if (!resp.ok || !data.success) { throw new Error(data.detail || data.error || "Player not found."); }
+        return data.player;
+    }
 
-            if (riskSdkPromise && riskSdkUrl === sdkUrl) {
-                return riskSdkPromise;
-            }
+    function applyPlayerInfo(playerId, player) {
+        document.getElementById("playerName").textContent = player.username || "(unknown)";
+        document.getElementById("playerMeta").textContent = [
+            player.zone_id && `Zone ${player.zone_id}`,
+        ].filter(Boolean).join(" / ");
+        document.getElementById("playerIdBadge").textContent = `UID: ${player.player_id}`;
+        document.getElementById("playerCard").classList.add("show");
+        verifiedPlayerId = playerId;
+        verifiedPlayerZoneId = player.zone_id || "1";
+        document.getElementById("redeemBtn").disabled = false;
+    }
 
-            riskSdkUrl = sdkUrl;
-            riskSdkPromise = new Promise((resolve, reject) => {
-                const script = document.createElement("script");
-                script.src = sdkUrl;
-                script.async = true;
-                script.onload = () => {
-                    if (window.midas && typeof window.midas.newRiskControl === "function") {
-                        resolve();
-                        return;
-                    }
+    function showConfirmModal(data, payload) {
+        pendingRedeemPayload = payload;
+        document.getElementById("confirmProduct").textContent = data.product_name || "UC redeem code";
+        document.getElementById("confirmModal").classList.add("show");
+    }
+    function closeConfirmModal() {
+        document.getElementById("confirmModal").classList.remove("show");
+        pendingRedeemPayload = null;
+    }
 
-                    reject(new Error("Midasbuy security verification did not initialize."));
-                };
-                script.onerror = () => {
-                    riskSdkPromise = null;
-                    riskSdkUrl = null;
-                    reject(new Error("Could not load Midasbuy security verification."));
-                };
-                document.head.appendChild(script);
-            });
-
-            return riskSdkPromise;
-        }
-
-        async function solveRiskChallenge(challengeUrl, sdkUrl) {
-            await loadRiskSdk(sdkUrl);
-            const result = await window.midas.newRiskControl(challengeUrl);
-
-            if (!result || !result.rc_token || !result.rc_uuid) {
-                throw new Error("Security verification was not completed.");
-            }
-
-            return result;
-        }
-
-        // Short-lived token minted by the Django view so the panel can call the
-        // now-authenticated /api endpoints. Reload the page if it expires (15 min).
-        const API_TOKEN = "{{ api_token|escapejs }}";
-        function authHeaders(extra) {
-            return Object.assign({ "Authorization": "Bearer " + API_TOKEN }, extra || {});
-        }
-
-        async function postRedeem(payload) {
-            const resp = await fetch("/api/redeem", {
-                method: "POST",
-                headers: authHeaders({ "Content-Type": "application/json" }),
-                body: JSON.stringify(payload),
-            });
-            const data = await resp.json();
-
-            if (!resp.ok) {
-                throw new Error(data.detail || "Redeem request failed.");
-            }
-
-            return data;
-        }
-
-        async function submitRedeemWithVerification(payload) {
-            let data = await postRedeem(payload);
-
-            for (let attempt = 0; attempt < 2 && data.verification_required; attempt += 1) {
-                if (!data.challenge_url) {
-                    throw new Error("Midasbuy did not provide a verification URL.");
-                }
-
-                if (!data.risk_sdk_url) {
-                    throw new Error("Midasbuy did not provide its verification SDK.");
-                }
-
-                setStatus(
-                    "redeemStatus",
-                    "loading",
-                    '<span class="spinner"></span>Complete the Midasbuy security verification...'
-                );
-                const verification = await solveRiskChallenge(
-                    data.challenge_url,
-                    data.risk_sdk_url
-                );
-                payload.rc_token = verification.rc_token;
-                payload.rc_uuid = verification.rc_uuid;
-                data = await postRedeem(payload);
-            }
-
-            if (data.verification_required) {
-                throw new Error("Midasbuy requested security verification again. Please retry.");
-            }
-
-            return data;
-        }
-
-        async function fetchPlayerInfo(playerId, country, accountId) {
-            const resp = await fetch(
-                `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}&account_id=${accountId}`,
-                { headers: authHeaders() }
-            );
-            const data = await resp.json();
-
-            if (!resp.ok || !data.success) {
-                throw new Error(data.detail || data.error || "Player not found.");
-            }
-
-            return data.player;
-        }
-
-        function applyPlayerInfo(playerId, player) {
-            document.getElementById("playerName").textContent = player.username || "(unknown)";
-            document.getElementById("playerMeta").textContent = [
-                player.zone_id && `Zone ${player.zone_id}`,
-            ].filter(Boolean).join(" / ");
-            document.getElementById("playerIdBadge").textContent = `UID: ${player.player_id}`;
-            document.getElementById("playerCard").classList.add("show");
-
-            verifiedPlayerId = playerId;
-            verifiedPlayerZoneId = player.zone_id || "1";
-            document.getElementById("redeemBtn").disabled = false;
-        }
-
-        function showConfirmModal(data, payload) {
-            pendingRedeemPayload = payload;
-            document.getElementById("confirmProduct").textContent =
-                data.product_name || "UC redeem code";
-            document.getElementById("confirmModal").classList.add("show");
-        }
-
-        function closeConfirmModal() {
-            document.getElementById("confirmModal").classList.remove("show");
-            pendingRedeemPayload = null;
-        }
-
-        async function confirmRedeemCode() {
-            if (!pendingRedeemPayload) {
+    async function confirmRedeemCode() {
+        if (!pendingRedeemPayload) { closeConfirmModal(); return; }
+        const btn = document.getElementById("confirmRedeemBtn");
+        const redeemBtn = document.getElementById("redeemBtn");
+        btn.disabled = true; redeemBtn.disabled = true;
+        setStatus("redeemStatus", "loading", '<span class="spinner"></span>Confirming redemption...');
+        try {
+            const data = await submitRedeemWithVerification({ ...pendingRedeemPayload, confirm: true });
+            if (data.confirmation_required) { throw new Error("Midasbuy requested confirmation again. Please retry."); }
+            if (data.success) {
                 closeConfirmModal();
-                return;
+                setStatus("redeemStatus", "success", data.message || "Redeemed successfully.");
+                document.getElementById("pinInput").value = "";
+            } else {
+                setStatus("redeemStatus", "error", data.message || "Redemption failed.");
             }
-
-            const btn = document.getElementById("confirmRedeemBtn");
-            const redeemBtn = document.getElementById("redeemBtn");
-            btn.disabled = true;
-            redeemBtn.disabled = true;
-            setStatus(
-                "redeemStatus",
-                "loading",
-                '<span class="spinner"></span>Confirming redemption...'
-            );
-
-            try {
-                const data = await submitRedeemWithVerification({
-                    ...pendingRedeemPayload,
-                    confirm: true,
-                });
-
-                if (data.confirmation_required) {
-                    throw new Error("Midasbuy requested confirmation again. Please retry.");
-                }
-
-                if (data.success) {
-                    closeConfirmModal();
-                    setStatus("redeemStatus", "success", data.message || "Redeemed successfully.");
-                    document.getElementById("pinInput").value = "";
-                } else {
-                    setStatus("redeemStatus", "error", data.message || "Redemption failed.");
-                }
-            } catch (err) {
-                setStatus(
-                    "redeemStatus",
-                    "error",
-                    err.message || "Network error. Please try again."
-                );
-            } finally {
-                btn.disabled = false;
-                redeemBtn.disabled = false;
-            }
+        } catch (err) {
+            setStatus("redeemStatus", "error", err.message || "Network error. Please try again.");
+        } finally {
+            btn.disabled = false; redeemBtn.disabled = false;
         }
+    }
 
-        async function lookupPlayer() {
-            const playerId = document.getElementById("playerIdInput").value.trim();
-            const country = document.getElementById("countrySelect").value;
-            const accountId = getAccountId();
+    async function lookupPlayer() {
+        const playerId = document.getElementById("playerIdInput").value.trim();
+        const country = document.getElementById("countrySelect").value;
+        const accountId = getAccountId();
+        if (!playerId) { setStatus("lookupStatus", "error", "Please enter a Player ID."); return; }
+        if (!accountId) { setStatus("lookupStatus", "error", "No logged-in account selected. Add one first."); return; }
+        const btn = document.getElementById("lookupBtn");
+        btn.disabled = true;
+        document.getElementById("playerCard").classList.remove("show");
+        document.getElementById("redeemBtn").disabled = true;
+        verifiedPlayerId = null; verifiedPlayerZoneId = "1";
+        setStatus("lookupStatus", "loading", '<span class="spinner"></span>Looking up player...');
+        try {
+            const player = await fetchPlayerInfo(playerId, country, accountId);
+            applyPlayerInfo(playerId, player);
+            clearStatus("lookupStatus");
+        } catch (err) {
+            setStatus("lookupStatus", "error", err.message || "Network error. Please try again.");
+        } finally {
+            btn.disabled = false;
+        }
+    }
 
-            if (!playerId) {
-                setStatus("lookupStatus", "error", "Please enter a Player ID.");
-                return;
-            }
-
-            if (!accountId) {
-                setStatus("lookupStatus", "error", "No logged-in account selected. Add one first.");
-                return;
-            }
-
-            const btn = document.getElementById("lookupBtn");
-            btn.disabled = true;
-            document.getElementById("playerCard").classList.remove("show");
-            document.getElementById("redeemBtn").disabled = true;
-            verifiedPlayerId = null;
-            verifiedPlayerZoneId = "1";
-
-            setStatus("lookupStatus", "loading", '<span class="spinner"></span>Looking up player...');
-
-            try {
+    async function redeemCode() {
+        const pinCode = document.getElementById("pinInput").value.trim();
+        const playerId = document.getElementById("playerIdInput").value.trim();
+        const country = document.getElementById("countrySelect").value;
+        const accountId = getAccountId();
+        if (!playerId) { setStatus("redeemStatus", "error", "Please enter a Player ID."); return; }
+        if (!pinCode) { setStatus("redeemStatus", "error", "Please enter a pin code."); return; }
+        if (!accountId) { setStatus("redeemStatus", "error", "No account selected."); return; }
+        const btn = document.getElementById("redeemBtn");
+        btn.disabled = true;
+        setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
+        try {
+            if (verifiedPlayerId !== playerId) {
+                setStatus("redeemStatus", "loading", '<span class="spinner"></span>Verifying player...');
                 const player = await fetchPlayerInfo(playerId, country, accountId);
                 applyPlayerInfo(playerId, player);
-                clearStatus("lookupStatus");
-            } catch (err) {
-                setStatus("lookupStatus", "error", err.message || "Network error. Please try again.");
-            } finally {
-                btn.disabled = false;
+                btn.disabled = true;
             }
-        }
-
-        async function redeemCode() {
-            const pinCode = document.getElementById("pinInput").value.trim();
-            const playerId = document.getElementById("playerIdInput").value.trim();
-            const country = document.getElementById("countrySelect").value;
-            const accountId = getAccountId();
-
-            if (!playerId) {
-                setStatus("redeemStatus", "error", "Please enter a Player ID.");
-                return;
-            }
-
-            if (!pinCode) {
-                setStatus("redeemStatus", "error", "Please enter a pin code.");
-                return;
-            }
-
-            if (!accountId) {
-                setStatus("redeemStatus", "error", "No account selected.");
-                return;
-            }
-
-            const btn = document.getElementById("redeemBtn");
-            btn.disabled = true;
             setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
-
-            try {
-                if (verifiedPlayerId !== playerId) {
-                    setStatus("redeemStatus", "loading", '<span class="spinner"></span>Verifying player...');
-                    const player = await fetchPlayerInfo(playerId, country, accountId);
-                    applyPlayerInfo(playerId, player);
-                    btn.disabled = true;
-                }
-
-                setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
-                const payload = {
-                    player_id: verifiedPlayerId,
-                    pin_code: pinCode,
-                    country_code: country,
-                    zone_id: verifiedPlayerZoneId,
-                    account_id: parseInt(accountId, 10),
-                };
-                const data = await submitRedeemWithVerification(payload);
-
-                if (data.confirmation_required) {
-                    payload.product_name = data.product_name || null;
-                    payload.product_id = data.product_id || null;
-                    showConfirmModal(data, {
-                        ...payload,
-                    });
-                    setStatus(
-                        "redeemStatus",
-                        "loading",
-                        data.message || "Redeem code is valid. Please confirm."
-                    );
-                } else if (data.success) {
-                    setStatus("redeemStatus", "success", data.message || "Redeemed successfully.");
-                    document.getElementById("pinInput").value = "";
-                } else {
-                    setStatus("redeemStatus", "error", data.message || data.detail || "Redemption failed.");
-                }
-            } catch (err) {
-                setStatus(
-                    "redeemStatus",
-                    "error",
-                    err.message || "Network error. Please try again."
-                );
-            } finally {
-                btn.disabled = false;
+            const payload = {
+                player_id: verifiedPlayerId, pin_code: pinCode, country_code: country,
+                zone_id: verifiedPlayerZoneId, account_id: parseInt(accountId, 10),
+            };
+            const data = await submitRedeemWithVerification(payload);
+            if (data.confirmation_required) {
+                payload.product_name = data.product_name || null;
+                payload.product_id = data.product_id || null;
+                showConfirmModal(data, { ...payload });
+                setStatus("redeemStatus", "loading", data.message || "Redeem code is valid. Please confirm.");
+            } else if (data.success) {
+                setStatus("redeemStatus", "success", data.message || "Redeemed successfully.");
+                document.getElementById("pinInput").value = "";
+            } else {
+                setStatus("redeemStatus", "error", data.message || data.detail || "Redemption failed.");
             }
+        } catch (err) {
+            setStatus("redeemStatus", "error", err.message || "Network error. Please try again.");
+        } finally {
+            btn.disabled = false;
         }
+    }
 
-        const lookupBtn = document.getElementById("lookupBtn");
-        const playerIdInput = document.getElementById("playerIdInput");
-        const pinInput = document.getElementById("pinInput");
-
-        if (!getAccountId()) {
-            lookupBtn.disabled = true;
-        }
-
-        playerIdInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
-                lookupPlayer();
-            }
-        });
-
-        pinInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
-                redeemCode();
-            }
-        });
-    </script>
-</body>
-</html>
+    const lookupBtn = document.getElementById("lookupBtn");
+    const playerIdInput = document.getElementById("playerIdInput");
+    const pinInput = document.getElementById("pinInput");
+    if (!getAccountId()) { lookupBtn.disabled = true; }
+    playerIdInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { lookupPlayer(); } });
+    pinInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { redeemCode(); } });
+</script>
+{% endif %}
+{% endblock %}

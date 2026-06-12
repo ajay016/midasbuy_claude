@@ -14,7 +14,7 @@ from asgiref.sync import sync_to_async
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
-from .dependencies import require_auth
+from .dependencies import require_api_access, require_auth
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -158,17 +158,17 @@ async def refresh(body: RefreshRequest):
 
 
 @router.post("/api-keys", response_model=ApiKeyCreatedResponse)
-async def create_api_key(body: ApiKeyCreateRequest, merchant: dict = Depends(require_auth)):
+async def create_api_key(body: ApiKeyCreateRequest, merchant: dict = Depends(require_api_access)):
     return await sync_to_async(_create_api_key)(merchant["merchant_id"], body.label)
 
 
 @router.get("/api-keys", response_model=list[ApiKeyItem])
-async def list_api_keys(merchant: dict = Depends(require_auth)):
+async def list_api_keys(merchant: dict = Depends(require_api_access)):
     return await sync_to_async(_list_api_keys)(merchant["merchant_id"])
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: str, merchant: dict = Depends(require_auth)):
+async def revoke_api_key(key_id: str, merchant: dict = Depends(require_api_access)):
     ok = await sync_to_async(_revoke_api_key)(merchant["merchant_id"], key_id)
     if not ok:
         raise HTTPException(404, "key not found")

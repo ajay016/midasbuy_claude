@@ -1,24 +1,46 @@
 # API Authentication
 
 Every `/api/*` data endpoint requires authentication. There are two ways in, both
-resolving to the same **Merchant**:
+resolving to the same **Merchant** (panel user / API customer):
 
 | Caller | Method | How |
 |--------|--------|-----|
 | Dashboard / browser user | **JWT** | log in → `Authorization: Bearer <access_token>` |
 | Server-to-server client | **HMAC signing** | sign each request with an API key secret |
 
-Public (no auth): `POST /api/auth/register`, `/login`, `/refresh`.
+Public (no auth): `/login`, `/refresh`. Self-`register` is **off by default** —
+accounts are created by an admin in the panel (Team & Clients) or with the
+`create_admin` management command for the first admin.
+
+## Roles & capabilities
+A Merchant has a `role` and capability flags, enforced on **both** the panel and
+the API (server-side, not just hidden menus):
+
+| Role | Order (lookup/redeem/bulk) | Manage bot accounts | Manage users | API access |
+|------|:--:|:--:|:--:|:--:|
+| **admin** | ✅ always | ✅ always | ✅ | ✅ always |
+| **staff** | only if `can_order` | — | — | only if `can_use_api` |
+| **client** | only if `can_order` | — | — | only if `can_use_api` |
+
+- Data endpoints require the **order** capability → otherwise `403`.
+- `POST/GET/DELETE /api/auth/api-keys` require the **API access** capability → otherwise `403`.
+
+A panel login (email + password) and an API key are **separate credentials**: a
+user may have one without the other, and either can be disabled/rotated without
+touching the other.
+
+Bootstrap the first admin:
+```bash
+python manage.py create_admin --email you@company.com --name "You"
+```
 
 ---
 
 ## A) Dashboard users — JWT
 
 ```bash
-# Register (or your panel does this once)
-curl -X POST http://localhost:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Acme","email":"ops@acme.com","password":"a-strong-password"}'
+# Accounts are created by an admin in the panel (Team & Clients), not self-serve.
+# Then the user logs in for tokens:
 
 # Login -> tokens
 curl -X POST http://localhost:8000/api/auth/login \
@@ -134,4 +156,5 @@ curl -X DELETE http://localhost:8000/api/auth/api-keys/mk_... \
 - Secrets are **encrypted at rest** (Fernet); a DB-only leak can't forge requests.
 - HMAC requests are **replay-proof** (timestamp window + one-time nonce in Redis) and the secret is **never sent**.
 - If Redis is down, signed requests **fail closed** (rejected) rather than skipping replay protection.
-- New merchant registration is open by default — gate it behind admin approval for production by setting new merchants `is_active=False` and approving in Django admin.
+- Self-registration is **disabled by default** (`APIAUTH_OPEN_REGISTRATION=False`); accounts are created by an admin in the panel.
+- Capabilities are checked server-side on every panel view and API route, so hiding a menu item is never the only line of defence.

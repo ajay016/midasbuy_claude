@@ -1,0 +1,78 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Midasbuy Panel{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
+    {% block head %}{% endblock %}
+</head>
+<body class="app">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark">M</span>
+        <span class="name">MIDAS<b>BUY</b></span>
+      </div>
+
+      {% with url_name=request.resolver_match.url_name %}
+      <nav class="side-nav">
+        <a href="{% url 'index' %}" class="{% if url_name == 'index' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          Dashboard
+        </a>
+
+        {% if merchant.allowed_to_manage_accounts %}
+        <div class="nav-section">Operations</div>
+        <a href="{% url 'account_list' %}" class="{% if url_name == 'account_list' or url_name == 'account_add' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 14 0v1"/></svg>
+          Bot Accounts
+        </a>
+        {% endif %}
+
+        {% if merchant.allowed_to_use_api %}
+        <div class="nav-section">Developer</div>
+        <a href="{% url 'my_api_keys' %}" class="{% if url_name == 'my_api_keys' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.5 7.5a4.5 4.5 0 1 1-6.5 6.5 4.5 4.5 0 0 1 6.5-6.5zM15 7l3 3"/></svg>
+          API Keys
+        </a>
+        <a href="{% url 'api_docs' %}" class="{% if url_name == 'api_docs' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          API Docs
+        </a>
+        {% endif %}
+
+        {% if merchant.allowed_to_manage_users %}
+        <div class="nav-section">Administration</div>
+        <a href="{% url 'team_list' %}" class="{% if url_name == 'team_list' or url_name == 'team_add' or url_name == 'team_edit' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Team &amp; Clients
+        </a>
+        {% endif %}
+      </nav>
+      {% endwith %}
+
+      <div class="side-foot">
+        {% if merchant %}
+        <div class="side-user">
+          <div class="u-name">{{ merchant.name }} <span class="role-pill {{ merchant.role }}">{{ merchant.role_label }}</span></div>
+          <div class="u-mail">{{ merchant.email }}</div>
+        </div>
+        {% endif %}
+        <a href="{% url 'panel_logout' %}" class="btn btn-outline" style="width:100%;margin-top:8px;">Logout</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

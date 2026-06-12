@@ -14,7 +14,7 @@ Both resolve to the same Merchant. Use it on a route with:
 import logging
 
 from asgiref.sync import sync_to_async
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 logger = logging.getLogger("api")
 
@@ -46,7 +46,7 @@ def _auth_jwt(token: str):
     m = Merchant.objects.filter(pk=merchant_id, is_active=True).first()
     if not m:
         return None
-    return {"merchant_id": m.id, "name": m.name, "auth": "jwt"}
+    return {"merchant_id": m.id, "name": m.name, "auth": "jwt", **m.capabilities()}
 
 
 def _auth_hmac(headers: dict, method: str, path: str, query: str, body: bytes):
@@ -84,7 +84,7 @@ def _auth_hmac(headers: dict, method: str, path: str, query: str, body: bytes):
         return None
 
     return {"merchant_id": key.merchant_id, "name": key.merchant.name, "auth": "hmac",
-            "key_id": key_id}
+            "key_id": key_id, **key.merchant.capabilities()}
 
 
 def _authenticate(method: str, path: str, query: str, body: bytes, headers: dict):
@@ -111,3 +111,26 @@ async def require_auth(request: Request) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         )
     return info
+
+
+def require_capability(flag: str, detail: str):
+    """Build a dependency that authenticates AND requires a capability flag.
+
+    Authentication (401) is handled by require_auth; this adds the authorization
+    (403) check on top, so an authenticated user who lacks the capability is told
+    so explicitly rather than getting a vague 401.
+    """
+    async def _dep(merchant: dict = Depends(require_auth)) -> dict:
+        if not merchant.get(flag):
+            raise HTTPException(status_code=403, detail=detail)
+        return merchant
+
+    return _dep
+
+
+require_order = require_capability(
+    "can_order", "Your account isn't permitted to place orders."
+)
+require_api_access = require_capability(
+    "can_use_api", "API access isn't enabled on your account."
+)

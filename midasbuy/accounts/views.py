@@ -6,20 +6,24 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from apiauth.panel import merchant_required
+from apiauth.panel import current_merchant, manage_accounts_required
 
 from .forms import MidasbuyAccountForm
 from .models import MidasbuyAccount
 from .services.login_service import login_account_and_persist
 
 
-@merchant_required
+@manage_accounts_required
 def account_list(request):
     accounts = MidasbuyAccount.objects.all()
-    return render(request, "accounts/list.html", {"accounts": accounts})
+    return render(
+        request,
+        "accounts/list.html",
+        {"accounts": accounts, "merchant": current_merchant(request)},
+    )
 
 
-@merchant_required
+@manage_accounts_required
 def account_add(request):
     if request.method == "POST":
         form = MidasbuyAccountForm(request.POST)
@@ -28,10 +32,13 @@ def account_add(request):
             return redirect("account_list")
     else:
         form = MidasbuyAccountForm()
-    return render(request, "accounts/add.html", {"form": form})
+    return render(
+        request, "accounts/add.html",
+        {"form": form, "merchant": current_merchant(request)},
+    )
 
 
-@merchant_required
+@manage_accounts_required
 def account_delete(request, pk):
     acct = get_object_or_404(MidasbuyAccount, pk=pk)
     if request.method == "POST":
@@ -40,7 +47,7 @@ def account_delete(request, pk):
 
 
 @require_POST
-@merchant_required
+@manage_accounts_required
 def account_login(request, pk):
     """Trigger Playwright login for this account."""
     acct = get_object_or_404(MidasbuyAccount, pk=pk)
@@ -48,7 +55,7 @@ def account_login(request, pk):
     return JsonResponse({"success": result.success, "message": result.message})
 
 
-@merchant_required
+@manage_accounts_required
 def account_session_status(request, pk):
     """Quick JSON check of whether the session files exist."""
     acct = get_object_or_404(MidasbuyAccount, pk=pk)

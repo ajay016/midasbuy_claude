@@ -1,0 +1,146 @@
+{% extends "redeem/base.html" %}
+{% block title %}{% if obj %}{{ obj.name }}{% else %}New user{% endif %} · Midasbuy Panel{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <a href="{% url 'team_list' %}" class="back" style="text-align:left;display:inline-block;margin:0 0 10px;">&larr; Team &amp; Clients</a>
+  <h1 style="text-align:left;">{% if obj %}Edit {{ obj.name }}{% else %}New user{% endif %}</h1>
+  <div class="sub">{% if obj %}Update role, permissions, password, and API keys.{% else %}Create an admin, staff, or client account.{% endif %}</div>
+</div>
+
+{% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+
+{% if secret_once %}
+<div class="secret-reveal">
+  <h3>New API key — copy the secret now</h3>
+  <p>This secret is shown <b>once</b> and is never stored in readable form. The client puts it in their code to sign requests.</p>
+  <div>Key ID</div><code>{{ secret_once.key_id }}</code>
+  <div>Secret</div><code>{{ secret_once.secret }}</code>
+</div>
+{% endif %}
+
+<div class="grid" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);align-items:start;">
+  <div class="card">
+    <form method="post" action="{% if obj %}{% url 'team_edit' obj.pk %}{% else %}{% url 'team_add' %}{% endif %}">
+      {% csrf_token %}
+      <div class="field">
+        <label>Name</label>
+        <input type="text" name="name" value="{{ obj.name|default:'' }}" required />
+      </div>
+      <div class="field">
+        <label>Email (used to sign in)</label>
+        <input type="email" name="email" value="{{ obj.email|default:'' }}" required />
+      </div>
+      <div class="field">
+        <label>Role</label>
+        <select name="role" id="roleSelect">
+          <option value="client" {% if obj.role == 'client' %}selected{% endif %}>Client</option>
+          <option value="staff"  {% if obj.role == 'staff' %}selected{% endif %}>Staff</option>
+          <option value="admin"  {% if obj.role == 'admin' %}selected{% endif %}>Admin</option>
+        </select>
+        <p class="hint">Admins always have every capability below, regardless of the checkboxes.</p>
+      </div>
+
+      <div class="field">
+        <label>Permissions</label>
+        <div class="perm-grid" id="permGrid">
+          <label class="perm">
+            <input type="checkbox" name="can_order" {% if obj.can_order %}checked{% endif %} />
+            <span class="perm-text"><b>Place orders</b><span>Look up players and redeem (panel &amp; API).</span></span>
+          </label>
+          <label class="perm">
+            <input type="checkbox" name="can_manage_accounts" {% if obj.can_manage_accounts %}checked{% endif %} />
+            <span class="perm-text"><b>Manage bot accounts</b><span>Add / log in the upstream Midasbuy accounts.</span></span>
+          </label>
+          <label class="perm">
+            <input type="checkbox" name="can_use_api" {% if obj.can_use_api %}checked{% endif %} />
+            <span class="perm-text"><b>API access</b><span>Create API keys and call the API directly.</span></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>{% if obj %}New password (leave blank to keep current){% else %}Password{% endif %}</label>
+        <input type="password" name="password" {% if not obj %}required{% endif %} autocomplete="new-password" placeholder="At least 8 characters" />
+      </div>
+
+      {% if obj %}
+      <div class="field">
+        <label class="perm" style="background:transparent;border:none;padding:0;">
+          <input type="checkbox" name="is_active" {% if obj.is_active %}checked{% endif %} />
+          <span class="perm-text"><b>Active</b><span>Unchecked = user can't sign in or authenticate.</span></span>
+        </label>
+      </div>
+      {% endif %}
+
+      <button type="submit" class="btn btn-primary" style="width:100%;">{% if obj %}Save changes{% else %}Create user{% endif %}</button>
+    </form>
+
+    {% if obj and obj.pk != merchant.pk %}
+    <hr class="divider" />
+    <form method="post" action="{% url 'team_delete' obj.pk %}" onsubmit="return confirm('Delete {{ obj.name|escapejs }}? This cannot be undone.');">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger" style="width:100%;">Delete user</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if obj %}
+  <div class="card">
+    <div class="account-name" style="margin-bottom:4px;">API keys</div>
+    <p class="account-email" style="margin-bottom:14px;line-height:1.5;">
+      {% if obj.allowed_to_use_api %}Issue a key for this user. The secret is shown once.
+      {% else %}Enable “API access” above and save before issuing a key.{% endif %}
+    </p>
+
+    {% if obj.allowed_to_use_api %}
+    <form method="post" action="{% url 'team_apikey_create' obj.pk %}" style="display:flex;gap:8px;margin-bottom:16px;">
+      {% csrf_token %}
+      <input type="text" name="label" placeholder="Label, e.g. prod-server" />
+      <button type="submit" class="btn btn-outline">Generate</button>
+    </form>
+    {% endif %}
+
+    {% for k in keys %}
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);">
+      <div>
+        <div class="key-row">{{ k.key_id }}</div>
+        <div class="muted" style="font-size:11px;">{{ k.label|default:'(no label)' }} · {{ k.created_at|date:"M j, Y" }}</div>
+      </div>
+      {% if k.is_active %}
+        <form method="post" action="{% url 'team_apikey_revoke' obj.pk k.key_id %}">
+          {% csrf_token %}<button class="btn btn-ghost" type="submit">Revoke</button>
+        </form>
+      {% else %}
+        <span class="badge badge-grey">Revoked</span>
+      {% endif %}
+    </div>
+    {% empty %}
+    <p class="muted" style="font-size:12px;">No keys yet.</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // When creating a user, pre-tick sensible default capabilities for the role.
+  const ROLE_DEFAULTS = {
+    admin:  { can_order: true,  can_manage_accounts: true,  can_use_api: true  },
+    staff:  { can_order: true,  can_manage_accounts: false, can_use_api: false },
+    client: { can_order: true,  can_manage_accounts: false, can_use_api: true  },
+  };
+  const isNew = {% if obj %}false{% else %}true{% endif %};
+  const sel = document.getElementById("roleSelect");
+  if (sel && isNew) {
+    sel.addEventListener("change", () => {
+      const d = ROLE_DEFAULTS[sel.value] || {};
+      for (const [name, val] of Object.entries(d)) {
+        const cb = document.querySelector(`#permGrid input[name="${name}"]`);
+        if (cb) cb.checked = val;
+      }
+    });
+  }
+</script>
+{% endblock %}
