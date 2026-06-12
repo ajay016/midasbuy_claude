@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "accounts",
     "redeem",
     "bulk",
+    "apiauth",
 ]
 
 MIDDLEWARE = [
@@ -104,6 +105,16 @@ CELERY_TASK_ACKS_LATE = True                 # re-queue if a worker dies mid-tas
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1        # one heavy task per worker slot
 CELERY_TASK_TRACK_STARTED = True
 CELERY_RESULT_EXTENDED = True
+
+# ── API authentication ─────────────────────────────────────────────────────────
+# JWT signing secret for dashboard/browser tokens. Defaults to SECRET_KEY; set a
+# dedicated value in production.
+JWT_SECRET = env("JWT_SECRET", default=SECRET_KEY)
+# Fernet key used to encrypt API secrets at rest (so a DB leak is not enough to
+# forge requests). Generate one with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# If unset, a stable key is derived from SECRET_KEY (fine for dev, set it in prod).
+APIAUTH_FERNET_KEY = env("APIAUTH_FERNET_KEY", default="")
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

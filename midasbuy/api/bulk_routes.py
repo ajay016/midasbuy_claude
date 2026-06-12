@@ -8,7 +8,7 @@ worker. Clients poll GET /api/bulk/jobs/{id} for progress and results.
 import logging
 
 from asgiref.sync import sync_to_async
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .bulk_schemas import (
     BulkCodeRequest,
@@ -17,9 +17,11 @@ from .bulk_schemas import (
     BulkJobResponse,
     BulkPlayerInfoRequest,
 )
+from .dependencies import require_auth
 
 logger = logging.getLogger("api")
-router = APIRouter(prefix="/bulk", tags=["bulk"])
+# Every /bulk/* route requires authentication (JWT or signed request).
+router = APIRouter(prefix="/bulk", tags=["bulk"], dependencies=[Depends(require_auth)])
 
 
 # ── Sync DB helpers (Django ORM is sync; call via sync_to_async) ───────────────

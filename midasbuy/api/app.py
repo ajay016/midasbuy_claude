@@ -6,16 +6,20 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "midasbuy_project.settings")
 django.setup()
 
 from asgiref.sync import sync_to_async
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 
+from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
+from .dependencies import require_auth
 from .schemas import PlayerLookupResponse, RedeemRequest, RedeemResponse
 from .service import get_player_info, submit_redeem
 
 logger = logging.getLogger(__name__)
 api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
 
-# Bulk operations (player-info / validate / redeem) live under /api/bulk/*
+# Auth (register/login/refresh/api-keys) under /api/auth/* — public + protected.
+api_app.include_router(auth_router)
+# Bulk operations under /api/bulk/* — every route requires auth (set on the router).
 api_app.include_router(bulk_router)
 
 
@@ -79,6 +83,7 @@ async def player_info(
     player_id:    str = Query(...),
     country_code: str = Query("bd"),
     account_id:   int | None = Query(None),
+    merchant:     dict = Depends(require_auth),
 ):
     ssp, cookies = await _resolve_session(account_id)
     result = await get_player_info(player_id, country_code, ssp, cookies)
@@ -88,7 +93,7 @@ async def player_info(
 
 
 @api_app.post("/redeem", response_model=RedeemResponse)
-async def redeem(body: RedeemRequest):
+async def redeem(body: RedeemRequest, merchant: dict = Depends(require_auth)):
     ssp, cookies = await _resolve_session(body.account_id)
     return await submit_redeem(
         body.player_id,

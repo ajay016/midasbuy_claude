@@ -38,6 +38,11 @@ typing_extensions==4.15.0
 sqlparse==0.5.5
 tzdata==2026.2
 
+# ── API authentication ─────────────────────────────────────────────────────────
+PyJWT==2.10.1              # JWT access/refresh tokens for dashboard users
+cryptography==44.0.0       # Fernet encryption of API secrets at rest
+email-validator==2.2.0     # validates EmailStr fields in pydantic schemas
+
 # ── Bulk operations / background processing ────────────────────────────────────
 celery==5.6.3              # task queue; workers run the browser redeem jobs
 redis==6.4.0               # pinned to celery 5.6.3's supported redis-py (it does not yet support 7/8)
