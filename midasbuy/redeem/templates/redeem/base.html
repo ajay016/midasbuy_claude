@@ -54,24 +54,33 @@
       {% endwith %}
 
       <div class="side-foot">
-        {% if user.is_authenticated %}
-        <div class="side-user">
-          <div class="u-name">{{ user.name }} <span class="role-pill {{ user.role }}">{{ user.role_label }}</span></div>
-          <div class="u-mail">{{ user.email }}</div>
-        </div>
-        {% endif %}
-        <a href="{% url 'panel_logout' %}" class="btn btn-outline" style="width:100%;margin-top:8px;">Logout</a>
+        <a href="{% url 'panel_logout' %}" class="btn btn-outline" style="width:100%;">Logout</a>
       </div>
     </aside>
 
-    <main class="main">
-      {% if messages %}
-      <ul class="messages">
-        {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
-      </ul>
-      {% endif %}
-      {% block content %}{% endblock %}
-    </main>
+    <div class="main-col">
+      <header class="navbar">
+        <div class="nav-title">{% block topbar_title %}Dashboard{% endblock %}</div>
+        {% if user.is_authenticated %}
+        <div class="nav-user">
+          <div class="nav-user-meta">
+            <span class="u-name">{{ user.name }}</span>
+            <span class="role-pill {{ user.role }}">{{ user.role_label }}</span>
+          </div>
+          <div class="avatar">{{ user.name|first|default:user.email|first|upper }}</div>
+        </div>
+        {% endif %}
+      </header>
+
+      <main class="main">
+        {% if messages %}
+        <ul class="messages">
+          {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
   </div>
   {% block scripts %}{% endblock %}
 </body>

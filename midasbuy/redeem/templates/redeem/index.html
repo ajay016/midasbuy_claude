@@ -2,8 +2,8 @@
 {% block title %}Dashboard · Midasbuy Panel{% endblock %}
 
 {% block content %}
-<div class="page-head">
-  <h1 style="text-align:left;">Welcome, {{ user.name }}</h1>
+<div class="page-head" style="text-align:center;">
+  <h1>Welcome, {{ user.name }}</h1>
   <div class="sub">
     {% if user.allowed_to_order %}Look up a player and redeem a UC code below.
     {% else %}Here's what your account has access to.{% endif %}
