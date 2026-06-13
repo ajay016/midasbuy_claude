@@ -20,16 +20,26 @@
           <div class="account-name">{{ acct.label }}</div>
           <div class="account-email">{{ acct.email }}</div>
         </div>
-        <span class="badge {% if acct.status == 1 %}badge-green{% elif acct.status == 2 %}badge-red{% else %}badge-grey{% endif %}">
-          {{ acct.get_status_display }}
-        </span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <span class="badge {% if acct.status == 1 %}badge-green{% elif acct.status == 2 %}badge-red{% else %}badge-grey{% endif %}">
+            {{ acct.get_status_display }}
+          </span>
+          {% if acct.is_flagged %}<span class="badge badge-red">Flagged</span>{% endif %}
+        </div>
       </div>
-      {% if acct.last_error %}
+      {% if acct.is_flagged %}
+      <div style="font-size:11px;color:#ff8a8a;margin-top:8px">Flagged after {{ acct.consecutive_errors }} errors — skipped by rotation until cleared.</div>
+      {% elif acct.last_error %}
       <div style="font-size:11px;color:#ff8a8a;margin-top:8px">{{ acct.last_error }}</div>
       {% endif %}
       <div class="card-actions">
         <button class="btn btn-success" onclick="doLogin({{ acct.pk }}, this)">Login / Refresh</button>
         <button class="btn btn-blue"    onclick="checkStatus({{ acct.pk }})">Check Session</button>
+        {% if acct.is_flagged %}
+        <form method="post" action="{% url 'account_unflag' acct.pk %}" style="display:inline">
+          {% csrf_token %}<button type="submit" class="btn btn-outline">Unflag</button>
+        </form>
+        {% endif %}
         <form method="post" action="{% url 'account_delete' acct.pk %}" style="display:inline" onsubmit="return confirm('Delete this account?')">
           {% csrf_token %}
           <button type="submit" class="btn btn-danger">Delete</button>

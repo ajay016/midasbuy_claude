@@ -36,23 +36,11 @@
 {% if user.allowed_to_order %}
 <div class="card narrow" style="margin:0;">
     <h1>Redeem Your UC Code</h1>
-    <p class="subtitle">Select a logged-in account, look up your player, then redeem</p>
+    <p class="subtitle">Look up your player, then redeem — the account is chosen for you</p>
 
-    {% if accounts %}
-        <div class="account-bar">
-            <label for="accountSelect">Account:</label>
-            <select id="accountSelect">
-                {% for acct in accounts %}
-                    <option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>
-                {% endfor %}
-            </select>
-            {% if user.allowed_to_manage_accounts %}
-              <a href="{% url 'account_list' %}" class="manage-link">Manage -></a>
-            {% endif %}
-        </div>
-    {% else %}
+    {% if not accounts %}
         <div class="no-accounts">
-            No logged-in Midasbuy accounts found.
+            No logged-in Midasbuy accounts available.
             {% if user.allowed_to_manage_accounts %}
               <a href="{% url 'account_add' %}">Add an account</a> and log in first.
             {% else %}
@@ -157,11 +145,6 @@
         el.className = "status";
         el.innerHTML = "";
     }
-    function getAccountId() {
-        const sel = document.getElementById("accountSelect");
-        return sel ? sel.value : null;
-    }
-
     function loadRiskSdk(sdkUrl) {
         if (window.midas && typeof window.midas.newRiskControl === "function") {
             return Promise.resolve();
@@ -212,6 +195,8 @@
 
     async function submitRedeemWithVerification(payload) {
         let data = await postRedeem(payload);
+        // Stay on the account the server assigned for the rest of this flow.
+        if (data.account_id) payload.account_id = data.account_id;
         for (let attempt = 0; attempt < 2 && data.verification_required; attempt += 1) {
             if (!data.challenge_url) { throw new Error("Midasbuy did not provide a verification URL."); }
             if (!data.risk_sdk_url) { throw new Error("Midasbuy did not provide its verification SDK."); }
@@ -225,9 +210,9 @@
         return data;
     }
 
-    async function fetchPlayerInfo(playerId, country, accountId) {
+    async function fetchPlayerInfo(playerId, country) {
         const resp = await fetch(
-            `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}&account_id=${accountId}`,
+            `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}`,
             { headers: authHeaders() }
         );
         const data = await resp.json();
@@ -283,9 +268,7 @@
     async function lookupPlayer() {
         const playerId = document.getElementById("playerIdInput").value.trim();
         const country = document.getElementById("countrySelect").value;
-        const accountId = getAccountId();
         if (!playerId) { setStatus("lookupStatus", "error", "Please enter a Player ID."); return; }
-        if (!accountId) { setStatus("lookupStatus", "error", "No logged-in account selected. Add one first."); return; }
         const btn = document.getElementById("lookupBtn");
         btn.disabled = true;
         document.getElementById("playerCard").classList.remove("show");
@@ -293,7 +276,7 @@
         verifiedPlayerId = null; verifiedPlayerZoneId = "1";
         setStatus("lookupStatus", "loading", '<span class="spinner"></span>Looking up player...');
         try {
-            const player = await fetchPlayerInfo(playerId, country, accountId);
+            const player = await fetchPlayerInfo(playerId, country);
             applyPlayerInfo(playerId, player);
             clearStatus("lookupStatus");
         } catch (err) {
@@ -307,24 +290,22 @@
         const pinCode = document.getElementById("pinInput").value.trim();
         const playerId = document.getElementById("playerIdInput").value.trim();
         const country = document.getElementById("countrySelect").value;
-        const accountId = getAccountId();
         if (!playerId) { setStatus("redeemStatus", "error", "Please enter a Player ID."); return; }
         if (!pinCode) { setStatus("redeemStatus", "error", "Please enter a pin code."); return; }
-        if (!accountId) { setStatus("redeemStatus", "error", "No account selected."); return; }
         const btn = document.getElementById("redeemBtn");
         btn.disabled = true;
         setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
         try {
             if (verifiedPlayerId !== playerId) {
                 setStatus("redeemStatus", "loading", '<span class="spinner"></span>Verifying player...');
-                const player = await fetchPlayerInfo(playerId, country, accountId);
+                const player = await fetchPlayerInfo(playerId, country);
                 applyPlayerInfo(playerId, player);
                 btn.disabled = true;
             }
             setStatus("redeemStatus", "loading", '<span class="spinner"></span>Submitting redeem code...');
             const payload = {
                 player_id: verifiedPlayerId, pin_code: pinCode, country_code: country,
-                zone_id: verifiedPlayerZoneId, account_id: parseInt(accountId, 10),
+                zone_id: verifiedPlayerZoneId,
             };
             const data = await submitRedeemWithVerification(payload);
             if (data.confirmation_required) {
@@ -345,10 +326,8 @@
         }
     }
 
-    const lookupBtn = document.getElementById("lookupBtn");
     const playerIdInput = document.getElementById("playerIdInput");
     const pinInput = document.getElementById("pinInput");
-    if (!getAccountId()) { lookupBtn.disabled = true; }
     playerIdInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { lookupPlayer(); } });
     pinInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { redeemCode(); } });
 </script>

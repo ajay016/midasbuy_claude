@@ -48,6 +48,16 @@ When the meter can't cover a call (or there is no active plan) the API returns
 **never** metered. Plans are granted/renewed by an admin under
 **Team & Clients → Subscriptions**.
 
+### Account rotation (server-side)
+Callers never choose which Midasbuy bot account is used — the server does. Only an
+admin adds accounts. The rotator round-robins across logged-in, non-flagged
+accounts and enforces a **per-account cap** (default **20** redeem/code-status
+calls per minute, `MIDASBUY_ACCOUNT_CAP_PER_MIN`); an account at its cap is
+skipped that minute. With a single account there's nothing to rotate to, so it
+stays on that one. Accounts that return continuous errors are **flagged** and
+skipped until a cooldown elapses (or an admin clears the flag). `account_id` in
+requests is accepted for backward compatibility but ignored.
+
 ### Rate limiting
 Every non-admin caller is also throttled to a **per-minute** limit (default **20
 requests/min**, set per user by an admin in **Team & Clients**; `0` = unlimited).

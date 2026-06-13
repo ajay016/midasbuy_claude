@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 # ── Requests ───────────────────────────────────────────────────────────────────
 class BulkPlayerInfoRequest(BaseModel):
-    account_id: int = Field(..., description="Logged-in MidasbuyAccount to use")
+    # account_id is server-managed (the rotator picks per item) — accepted but ignored.
+    account_id: Optional[int] = Field(None, description="Ignored — the server rotates accounts.")
     country_code: str = Field("bd", description="ISO country / storefront code")
     player_ids: list[str] = Field(..., min_length=1, description="PUBG Mobile UIDs to look up")
     webhook_url: Optional[str] = Field(
@@ -17,7 +18,7 @@ class BulkPlayerInfoRequest(BaseModel):
 
 class BulkCodeRequest(BaseModel):
     """One player + many codes (matches the bulk plan; extends later to many players)."""
-    account_id: int = Field(..., description="Logged-in MidasbuyAccount to use")
+    account_id: Optional[int] = Field(None, description="Ignored — the server rotates accounts.")
     country_code: str = Field("bd", description="ISO country / storefront code")
     player_id: str = Field(..., description="PUBG Mobile UID that owns these codes")
     pin_codes: list[str] = Field(..., min_length=1, description="UC redeem pin codes")

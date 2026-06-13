@@ -122,11 +122,9 @@ async def bulk_player_info(body: BulkPlayerInfoRequest,
     """Look up many player UIDs. Poll the job (or set webhook_url) for the
     valid/invalid split."""
     await charge(identity, 1)  # player lookup: per request, not per UID
-    if not await sync_to_async(_account_ok)(body.account_id):
-        raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": pid} for pid in body.player_ids]
     return await sync_to_async(_create_job)(
-        "player_info", body.account_id, body.country_code, rows, body.webhook_url or ""
+        "player_info", None, body.country_code, rows, body.webhook_url or ""
     )
 
 
@@ -135,12 +133,10 @@ async def bulk_player_info(body: BulkPlayerInfoRequest,
 async def bulk_code_status(body: BulkCodeRequest, identity: dict = Depends(require_order)):
     """For one player, check many codes. Does NOT redeem."""
     await charge(identity, len(body.pin_codes))  # one upstream call per code
-    if not await sync_to_async(_account_ok)(body.account_id):
-        raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}
             for c in body.pin_codes]
     return await sync_to_async(_create_job)(
-        "validate", body.account_id, body.country_code, rows, body.webhook_url or ""
+        "validate", None, body.country_code, rows, body.webhook_url or ""
     )
 
 
@@ -148,12 +144,10 @@ async def bulk_code_status(body: BulkCodeRequest, identity: dict = Depends(requi
 async def bulk_redeem(body: BulkCodeRequest, identity: dict = Depends(require_order)):
     """For one player, redeem many codes (lookup -> validate -> redeem each)."""
     await charge(identity, len(body.pin_codes))  # one upstream redeem per code
-    if not await sync_to_async(_account_ok)(body.account_id):
-        raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}
             for c in body.pin_codes]
     return await sync_to_async(_create_job)(
-        "redeem", body.account_id, body.country_code, rows, body.webhook_url or ""
+        "redeem", None, body.country_code, rows, body.webhook_url or ""
     )
 
 

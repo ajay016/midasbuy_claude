@@ -329,7 +329,9 @@ GROUPS = [
     {
         "id": "single",
         "title": "Single",
-        "blurb": "Synchronous calls for one player / one code.",
+        "blurb": "Synchronous calls for one player / one code. The bot account is chosen "
+                 "server-side (rotated across accounts, respecting each one's per-minute "
+                 "limit) — you never pass an account id.",
         "endpoints": [
             {
                 "id": "player-info", "method": "GET", "path": "/api/player-info", "auth": True,
@@ -337,9 +339,8 @@ GROUPS = [
                 "params": [
                     ("player_id", "query · string", "PUBG Mobile UID"),
                     ("country_code", "query · string", "Storefront code, e.g. bd"),
-                    ("account_id", "query · int", "MidasbuyAccount to use"),
                 ],
-                "query": {"player_id": "25849080551179560", "country_code": "bd", "account_id": 1},
+                "query": {"player_id": "25849080551179560", "country_code": "bd"},
                 "response": {"success": True,
                              "player": {"player_id": "25849080551179560", "username": "ProGamer",
                                         "zone_id": ""}},
@@ -348,12 +349,11 @@ GROUPS = [
                 "id": "code-status", "method": "POST", "path": "/api/code-status", "auth": True,
                 "title": "Code status", "desc": "Is a code valid / used / invalid? Does NOT redeem.",
                 "params": [
-                    ("account_id", "body · int", "MidasbuyAccount to use"),
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID the code belongs to"),
                     ("pin_code", "body · string", "UC redeem pin code"),
                 ],
-                "request": {"account_id": 1, "country_code": "bd",
+                "request": {"country_code": "bd",
                             "player_id": "25849080551179560", "pin_code": "ABCD-EFGH-IJKL"},
                 "response": {"success": True, "status": "valid", "message": "Redeem code is valid.",
                              "username": "ProGamer", "product_name": "60 UC"},
@@ -364,12 +364,11 @@ GROUPS = [
                 "title": "Redeem (all-in-one)",
                 "desc": "Look up the player, validate the code, and redeem — in one call.",
                 "params": [
-                    ("account_id", "body · int", "MidasbuyAccount to use"),
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID"),
                     ("pin_code", "body · string", "UC redeem pin code"),
                 ],
-                "request": {"account_id": 1, "country_code": "bd",
+                "request": {"country_code": "bd",
                             "player_id": "25849080551179560", "pin_code": "ABCD-EFGH-IJKL"},
                 "response": {"success": True, "status": "redeemed",
                              "message": "Redeemed successfully.", "username": "ProGamer",
@@ -389,12 +388,11 @@ GROUPS = [
                 "id": "bulk-player-info", "method": "POST", "path": "/api/bulk/player-info", "auth": True,
                 "title": "Bulk player lookup", "desc": "Look up many UIDs.",
                 "params": [
-                    ("account_id", "body · int", "MidasbuyAccount to use"),
                     ("country_code", "body · string", "Storefront code"),
                     ("player_ids", "body · string[]", "UIDs to look up"),
                     ("webhook_url", "body · string?", "Optional: POST the result here when done"),
                 ],
-                "request": {"account_id": 1, "country_code": "bd",
+                "request": {"country_code": "bd",
                             "player_ids": ["25849080551179560", "51234567890123456"],
                             "webhook_url": "https://you.example.com/hooks/midasbuy"},
                 "response": {"job_id": 42, "job_type": "player_info", "status": "pending",
@@ -404,13 +402,12 @@ GROUPS = [
                 "id": "bulk-code-status", "method": "POST", "path": "/api/bulk/code-status", "auth": True,
                 "title": "Bulk code status", "desc": "One player, many codes. Does NOT redeem.",
                 "params": [
-                    ("account_id", "body · int", "MidasbuyAccount to use"),
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID"),
                     ("pin_codes", "body · string[]", "UC redeem pin codes"),
                     ("webhook_url", "body · string?", "Optional completion webhook"),
                 ],
-                "request": {"account_id": 1, "country_code": "bd", "player_id": "25849080551179560",
+                "request": {"country_code": "bd", "player_id": "25849080551179560",
                             "pin_codes": ["ABCD-EFGH-IJKL", "WXYZ-1234-5678"]},
                 "response": {"job_id": 43, "job_type": "validate", "status": "pending",
                              "total_items": 2, "progress_percent": 0},
@@ -419,13 +416,12 @@ GROUPS = [
                 "id": "bulk-redeem", "method": "POST", "path": "/api/bulk/redeem", "auth": True,
                 "title": "Bulk redeem", "desc": "One player, redeem many codes.",
                 "params": [
-                    ("account_id", "body · int", "MidasbuyAccount to use"),
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID"),
                     ("pin_codes", "body · string[]", "UC redeem pin codes"),
                     ("webhook_url", "body · string?", "Optional completion webhook"),
                 ],
-                "request": {"account_id": 1, "country_code": "bd", "player_id": "25849080551179560",
+                "request": {"country_code": "bd", "player_id": "25849080551179560",
                             "pin_codes": ["ABCD-EFGH-IJKL", "WXYZ-1234-5678"]},
                 "response": {"job_id": 44, "job_type": "redeem", "status": "pending",
                              "total_items": 2, "progress_percent": 0},

@@ -41,6 +41,16 @@ def account_delete(request, pk):
 
 @require_POST
 @manage_accounts_required
+def account_unflag(request, pk):
+    """Clear a flag so the rotator uses this account again."""
+    MidasbuyAccount.objects.filter(pk=pk).update(
+        is_flagged=False, consecutive_errors=0, flagged_at=None
+    )
+    return redirect("account_list")
+
+
+@require_POST
+@manage_accounts_required
 def account_login(request, pk):
     """Trigger Playwright login for this account."""
     acct = get_object_or_404(MidasbuyAccount, pk=pk)

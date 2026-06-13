@@ -84,16 +84,37 @@ async def _resolve_session(account_id: int | None) -> tuple[str | None, str | No
     return await sync_to_async(_resolve_session_sync)(account_id)
 
 
+async def _select_session(metered: bool) -> tuple[int, str, str]:
+    """Server picks the bot account (clients don't choose). Returns
+    (account_id, storage_state_path, cookie_header) or raises 503."""
+    from accounts.services.rotation import pick_account
+
+    acct, reason = await sync_to_async(pick_account)(metered)
+    if acct is None:
+        raise HTTPException(status_code=503, detail=reason or "No account available.")
+    ssp, cookies = await sync_to_async(_resolve_session_sync)(acct.id)
+    if not ssp:
+        raise HTTPException(status_code=503,
+                            detail="Selected account has no valid session. Log it in first.")
+    return acct.id, ssp, cookies
+
+
+async def _report(account_id: int | None, success: bool) -> None:
+    from accounts.services.rotation import report_result
+
+    await sync_to_async(report_result)(account_id, bool(success))
+
+
 @api_app.get("/player-info", response_model=PlayerLookupResponse)
 async def player_info(
     player_id:    str = Query(...),
     country_code: str = Query("bd"),
-    account_id:   int | None = Query(None),
     identity:     dict = Depends(require_order),
 ):
     await charge(identity, 1)  # player lookup: per request
-    ssp, cookies = await _resolve_session(account_id)
+    account_id, ssp, cookies = await _select_session(metered=False)
     result = await get_player_info(player_id, country_code, ssp, cookies)
+    await _report(account_id, result.success)
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
     return result
@@ -103,16 +124,20 @@ async def player_info(
 async def code_status(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """Check one code for one player: valid / used / invalid. Does NOT redeem."""
     await charge(identity, 1)
-    ssp, cookies = await _resolve_session(body.account_id)
-    return await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+    account_id, ssp, cookies = await _select_session(metered=True)
+    result = await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+    await _report(account_id, result.success)
+    return result
 
 
 @api_app.post("/redeem-now", response_model=CodeActionResponse, tags=["single"])
 async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """All-in-one: look up player -> validate code -> redeem, in a single call."""
     await charge(identity, 1)  # one redeem item
-    ssp, cookies = await _resolve_session(body.account_id)
-    return await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+    account_id, ssp, cookies = await _select_session(metered=True)
+    result = await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
+    await _report(account_id, result.success)
+    return result
 
 
 @api_app.post("/redeem", response_model=RedeemResponse, tags=["single"])
@@ -122,8 +147,18 @@ async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
     # confirm and verification retries for the same item don't double-count.
     if not body.confirm:
         await charge(identity, 1)
-    ssp, cookies = await _resolve_session(body.account_id)
-    return await submit_redeem(
+
+    # First call: the server picks the account and returns its id; the panel echoes
+    # that id back on confirm/verification so the whole flow stays on one session.
+    if body.account_id:
+        account_id = body.account_id
+        ssp, cookies = await _resolve_session(account_id)
+        if not ssp:
+            raise HTTPException(status_code=503, detail="Account session expired. Retry.")
+    else:
+        account_id, ssp, cookies = await _select_session(metered=True)
+
+    result = await submit_redeem(
         body.player_id,
         body.pin_code,
         body.country_code,
@@ -136,3 +171,8 @@ async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
         body.product_name,
         body.product_id,
     )
+    result.account_id = account_id
+    # Only judge account health on terminal outcomes (not mid-flow prompts).
+    if not (result.verification_required or result.confirmation_required):
+        await _report(account_id, result.success)
+    return result

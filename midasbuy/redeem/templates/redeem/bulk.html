@@ -24,15 +24,6 @@
       </select>
     </div>
     <div class="field">
-      <label>Account</label>
-      <select id="account">
-        {% for acct in accounts %}<option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>{% endfor %}
-      </select>
-    </div>
-  </div>
-
-  <div class="grid" style="grid-template-columns:1fr 1fr;">
-    <div class="field">
       <label>Country</label>
       <select id="country">
         <option value="bd">BD</option><option value="us">US</option><option value="id">ID</option>
@@ -102,21 +93,20 @@
 
   async function runBulk() {
     const op = opSel.value;
-    const account_id = parseInt(document.getElementById("account").value, 10);
     const country_code = document.getElementById("country").value;
     let url, payload;
 
     if (op === "player-info") {
       const player_ids = lines("playerIds");
       if (!player_ids.length) return setStatus("error", "Enter at least one player ID.");
-      url = "/api/bulk/player-info"; payload = { account_id, country_code, player_ids };
+      url = "/api/bulk/player-info"; payload = { country_code, player_ids };
     } else {
       const player_id = document.getElementById("playerId").value.trim();
       const pin_codes = lines("codes");
       if (!player_id) return setStatus("error", "Enter the player ID.");
       if (!pin_codes.length) return setStatus("error", "Enter at least one code.");
       url = op === "redeem" ? "/api/bulk/redeem" : "/api/bulk/code-status";
-      payload = { account_id, country_code, player_id, pin_codes };
+      payload = { country_code, player_id, pin_codes };
     }
 
     const btn = document.getElementById("runBtn");

@@ -26,6 +26,12 @@ class MidasbuyAccount(models.Model):
     last_login   = models.DateTimeField(blank=True, null=True)
     last_login_at = models.DateTimeField(blank=True, null=True)
 
+    # Rotation health: continuous upstream errors flag an account so the rotator
+    # skips it (auto-retried after a cooldown, or cleared by an admin).
+    consecutive_errors = models.IntegerField(default=0)
+    is_flagged         = models.BooleanField(default=False)
+    flagged_at         = models.DateTimeField(blank=True, null=True)
+
     created_at   = models.DateTimeField(auto_now_add=True)
     updated_at   = models.DateTimeField(auto_now=True)
 

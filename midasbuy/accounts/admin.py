@@ -10,12 +10,20 @@ class MidasbuyAccountAdmin(admin.ModelAdmin):
         "label",
         "email",
         "status",
+        "is_flagged",
+        "consecutive_errors",
         "last_login_at",
         "updated_at",
     )
-    list_filter = ("status", "created_at", "updated_at")
+    list_filter = ("status", "is_flagged", "created_at", "updated_at")
     search_fields = ("label", "email", "phone")
-    readonly_fields = ("created_at", "updated_at", "last_login", "last_login_at")
+    readonly_fields = ("created_at", "updated_at", "last_login", "last_login_at", "flagged_at")
+    actions = ["clear_flag"]
+
+    @admin.action(description="Clear flag (make available for rotation again)")
+    def clear_flag(self, request, queryset):
+        n = queryset.update(is_flagged=False, consecutive_errors=0, flagged_at=None)
+        self.message_user(request, f"Cleared flags on {n} account(s).")
     exclude = (
         "password",
         "cookie_data",

@@ -26,7 +26,7 @@ from .services import (
 
 logger = logging.getLogger("bulk")
 
-_LOCK_TTL = 60 * 60  # seconds; safety expiry so a crashed worker can't deadlock
+_LOCK_TTL = 180  # seconds; per-item safety expiry so a crashed worker can't deadlock
 
 
 @contextlib.contextmanager
@@ -55,64 +55,86 @@ def _account_lock(account_id):
 def run_bulk_job(self, job_id: int):
     job = BulkJob.objects.get(pk=job_id)
 
-    with _account_lock(job.account_id) as got_lock:
-        if not got_lock:
-            # Another job for this account is running — try again shortly.
-            logger.info("[BULK] account %s busy; retrying job %s in 30s", job.account_id, job_id)
-            raise self.retry(countdown=30)
+    job.status = JobStatus.RUNNING
+    job.started_at = timezone.now()
+    job.celery_task_id = self.request.id or ""
+    job.save(update_fields=["status", "started_at", "celery_task_id"])
 
-        job.status = JobStatus.RUNNING
-        job.started_at = timezone.now()
-        job.celery_task_id = self.request.id or ""
-        job.save(update_fields=["status", "started_at", "celery_task_id"])
+    # The server rotates accounts per item now — just confirm at least one is up.
+    from accounts.services.rotation import available_accounts
 
-        ssp, cookies = resolve_session(job.account_id)
-        if not ssp:
-            job.status = JobStatus.FAILED
-            job.error = "No valid session for this account. Log the account in first."
-            job.finished_at = timezone.now()
-            job.save(update_fields=["status", "error", "finished_at"])
-            _deliver_webhook(job)
-            return {"job_id": job_id, "status": job.status}
-
-        for item in job.items.filter(status=ItemStatus.PENDING).iterator():
-            _process_item(job, item, ssp, cookies)
-
-        job.refresh_from_db()
-        job.status = JobStatus.COMPLETED
+    if not available_accounts():
+        job.status = JobStatus.FAILED
+        job.error = "No logged-in Midasbuy account available."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "finished_at"])
-        logger.info(
-            "[BULK] job %s done: %s/%s succeeded",
-            job_id, job.succeeded_items, job.total_items,
-        )
+        job.save(update_fields=["status", "error", "finished_at"])
         _deliver_webhook(job)
-        return {
-            "job_id": job_id,
-            "status": job.status,
-            "succeeded": job.succeeded_items,
-            "failed": job.failed_items,
-        }
+        return {"job_id": job_id, "status": job.status}
+
+    for item in job.items.filter(status=ItemStatus.PENDING).iterator():
+        _process_item(job, item)
+
+    job.refresh_from_db()
+    job.status = JobStatus.COMPLETED
+    job.finished_at = timezone.now()
+    job.save(update_fields=["status", "finished_at"])
+    logger.info(
+        "[BULK] job %s done: %s/%s succeeded",
+        job_id, job.succeeded_items, job.total_items,
+    )
+    _deliver_webhook(job)
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "succeeded": job.succeeded_items,
+        "failed": job.failed_items,
+    }
 
 
-def _process_item(job: BulkJob, item: BulkJobItem, ssp: str, cookies: str):
+def _process_item(job: BulkJob, item: BulkJobItem):
+    """Pick a healthy account (rotating, respecting its per-minute cap), lock it
+    for this item so two jobs can't share a session, run the operation, and feed
+    the outcome back to the rotator for flagging."""
+    from accounts.services.rotation import pick_account, report_result
+
     item.status = ItemStatus.PROCESSING
     item.save(update_fields=["status"])
 
-    try:
-        if job.job_type == JobType.PLAYER_INFO:
-            out = process_player_info(item.player_id, job.country_code, ssp, cookies)
-        elif job.job_type == JobType.VALIDATE:
-            out = process_validate(
-                item.player_id, item.pin_code, job.country_code, ssp, cookies, item.zone_id
-            )
-        else:  # REDEEM
-            out = process_redeem(
-                item.player_id, item.pin_code, job.country_code, ssp, cookies, item.zone_id
-            )
-    except Exception as exc:  # never let one bad item kill the whole job
-        logger.exception("[BULK] item %s crashed", item.pk)
-        out = {"success": False, "message": f"Internal error: {exc}", "raw": {}}
+    metered = job.job_type != JobType.PLAYER_INFO  # lookups don't count to the cap
+    account_id = None
+    out = {"success": False, "message": "No account available right now.", "raw": {}}
+
+    # Try a few accounts so a momentarily-locked one doesn't stall the item.
+    for _ in range(5):
+        acct, reason = pick_account(metered=metered)
+        if acct is None:
+            out = {"success": False, "message": reason or out["message"], "raw": {}}
+            break
+        with _account_lock(acct.id) as got_lock:
+            if not got_lock:
+                continue  # busy — rotate to another account
+            account_id = acct.id
+            ssp, cookies = resolve_session(acct.id)
+            if not ssp:
+                out = {"success": False,
+                       "message": "Selected account has no valid session.", "raw": {}}
+                break
+            try:
+                if job.job_type == JobType.PLAYER_INFO:
+                    out = process_player_info(item.player_id, job.country_code, ssp, cookies)
+                elif job.job_type == JobType.VALIDATE:
+                    out = process_validate(item.player_id, item.pin_code, job.country_code,
+                                           ssp, cookies, item.zone_id)
+                else:  # REDEEM
+                    out = process_redeem(item.player_id, item.pin_code, job.country_code,
+                                         ssp, cookies, item.zone_id)
+            except Exception as exc:  # never let one bad item kill the whole job
+                logger.exception("[BULK] item %s crashed", item.pk)
+                out = {"success": False, "message": f"Internal error: {exc}", "raw": {}}
+            break
+
+    if account_id is not None:
+        report_result(account_id, bool(out.get("success")))
 
     item.success = bool(out.get("success"))
     item.status = ItemStatus.SUCCESS if item.success else ItemStatus.FAILED

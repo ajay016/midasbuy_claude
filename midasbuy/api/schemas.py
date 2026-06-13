@@ -42,6 +42,7 @@ class RedeemResponse(BaseModel):
     product_id:            str | None = None
     challenge_url:         str | None = None
     risk_sdk_url:          str | None = None
+    account_id:            int | None = None  # server-assigned; echo back to confirm
     raw:                   dict | None = None
 
 

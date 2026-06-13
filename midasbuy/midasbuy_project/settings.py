@@ -166,3 +166,9 @@ MIDASBUY_CRYPTO_BROWSER_HEADLESS = env.bool("MIDASBUY_CRYPTO_BROWSER_HEADLESS", 
 MIDASBUY_BROWSER_USER_AGENT = env("MIDASBUY_BROWSER_USER_AGENT", default="")
 MIDASBUY_BROWSER_VIEWPORT = {"width": 1440, "height": 900}
 MIDASBUY_LOGIN_BASE_URL = "https://www.midasbuy.com/midasbuy"
+
+# Account rotation: per-account cap (redeem/code-status calls per minute) and how
+# repeated upstream errors flag an account out of rotation.
+MIDASBUY_ACCOUNT_CAP_PER_MIN = env.int("MIDASBUY_ACCOUNT_CAP_PER_MIN", default=20)
+MIDASBUY_ACCOUNT_FLAG_THRESHOLD = env.int("MIDASBUY_ACCOUNT_FLAG_THRESHOLD", default=5)
+MIDASBUY_ACCOUNT_FLAG_COOLDOWN = env.int("MIDASBUY_ACCOUNT_FLAG_COOLDOWN", default=600)
