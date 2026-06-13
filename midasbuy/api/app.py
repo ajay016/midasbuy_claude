@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 
 from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
-from .dependencies import require_order
+from .dependencies import charge, require_order
 from .schemas import (
     CodeActionRequest,
     CodeActionResponse,
@@ -91,6 +91,7 @@ async def player_info(
     account_id:   int | None = Query(None),
     identity:     dict = Depends(require_order),
 ):
+    await charge(identity, 1)  # player lookup: per request
     ssp, cookies = await _resolve_session(account_id)
     result = await get_player_info(player_id, country_code, ssp, cookies)
     if not result.success:
@@ -101,6 +102,7 @@ async def player_info(
 @api_app.post("/code-status", response_model=CodeActionResponse, tags=["single"])
 async def code_status(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """Check one code for one player: valid / used / invalid. Does NOT redeem."""
+    await charge(identity, 1)
     ssp, cookies = await _resolve_session(body.account_id)
     return await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
 
@@ -108,6 +110,7 @@ async def code_status(body: CodeActionRequest, identity: dict = Depends(require_
 @api_app.post("/redeem-now", response_model=CodeActionResponse, tags=["single"])
 async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_order)):
     """All-in-one: look up player -> validate code -> redeem, in a single call."""
+    await charge(identity, 1)  # one redeem item
     ssp, cookies = await _resolve_session(body.account_id)
     return await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
 
@@ -115,6 +118,10 @@ async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_o
 @api_app.post("/redeem", response_model=RedeemResponse, tags=["single"])
 async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
     """Interactive two-step flow used by the panel (validate, then confirm)."""
+    # Charge once per redeem item — on the initiating call only, so the follow-up
+    # confirm and verification retries for the same item don't double-count.
+    if not body.confirm:
+        await charge(identity, 1)
     ssp, cookies = await _resolve_session(body.account_id)
     return await submit_redeem(
         body.player_id,

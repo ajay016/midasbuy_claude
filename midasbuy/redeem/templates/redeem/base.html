@@ -23,8 +23,16 @@
           Dashboard
         </a>
 
-        {% if user.allowed_to_manage_accounts %}
+        {% if user.allowed_to_order or user.allowed_to_manage_accounts %}
         <div class="nav-section">Operations</div>
+        {% endif %}
+        {% if user.allowed_to_order %}
+        <a href="{% url 'bulk_page' %}" class="{% if url_name == 'bulk_page' %}active{% endif %}">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+          Bulk operations
+        </a>
+        {% endif %}
+        {% if user.allowed_to_manage_accounts %}
         <a href="{% url 'account_list' %}" class="{% if url_name == 'account_list' or url_name == 'account_add' %}active{% endif %}">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 14 0v1"/></svg>
           Bot Accounts

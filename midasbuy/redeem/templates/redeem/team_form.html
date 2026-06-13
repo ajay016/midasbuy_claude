@@ -61,6 +61,13 @@
       </div>
 
       <div class="field">
+        <label>Rate limit (requests / minute)</label>
+        <input type="number" name="rate_limit_per_min" min="0"
+               value="{% if obj %}{{ obj.rate_limit_per_min }}{% else %}20{% endif %}" />
+        <p class="hint">Throttle for this user (0 = unlimited). Admins are never throttled.</p>
+      </div>
+
+      <div class="field">
         <label>{% if obj %}New password (leave blank to keep current){% else %}Password{% endif %}</label>
         <input type="password" name="password" {% if not obj %}required{% endif %} autocomplete="new-password" placeholder="At least 8 characters" />
       </div>

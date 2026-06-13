@@ -43,6 +43,19 @@ class Subscription(models.Model):
     period_start = models.DateTimeField(default=timezone.now)
     period_end = models.DateTimeField()
 
+    # ── Placeholders for features we'll implement later (kept so the schema and
+    # admin are ready and don't need another migration when we wire them up) ──
+    # Auto-renew: when True, a future scheduled task will roll the window AND
+    # trigger a charge at period_end instead of just resetting the meter lazily.
+    auto_renew = models.BooleanField(
+        default=False, help_text="Reserved: auto-renew + bill at period end (not active yet)."
+    )
+    # Real payment processing: reference to the gateway's record (Stripe/etc.).
+    payment_ref = models.CharField(
+        max_length=128, blank=True, default="",
+        help_text="Reserved: external payment/gateway reference (not active yet)."
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -85,6 +85,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=False, help_text="Can log into the Django admin site."
     )
 
+    # Max billable API/panel requests per minute (0 = unlimited). Admin-tunable.
+    rate_limit_per_min = models.PositiveIntegerField(
+        default=20, help_text="Requests per minute before HTTP 429 (0 = unlimited)."
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -134,6 +139,7 @@ class User(AbstractBaseUser, PermissionsMixin):
             "can_manage_accounts": self.allowed_to_manage_accounts,
             "can_use_api": self.allowed_to_use_api,
             "can_manage_users": self.allowed_to_manage_users,
+            "rate_limit_per_min": self.rate_limit_per_min,
         }
 
 

@@ -35,10 +35,25 @@ per 30 days by default):
 | **panel** | dashboard requests | the caller authenticates with a **JWT** |
 | **api** | server-to-server requests | the caller authenticates with **HMAC** |
 
-Each billable request consumes one unit; when the meter is empty (or there is no
-active plan) the API returns **`402`** until the 30-day window resets. Admins and
-staff are internal and are **never** metered. Plans are granted/renewed by an
-admin under **Team & Clients → Subscriptions**.
+Cost per call is based on upstream Midasbuy work:
+
+| Endpoint | Units charged |
+|----------|---------------|
+| `GET /player-info`, `POST /bulk/player-info` | **1** (per request) |
+| `POST /code-status`, `/redeem-now`, `/redeem` | **1** |
+| `POST /bulk/redeem`, `POST /bulk/code-status` | **one per code** (per item) |
+
+When the meter can't cover a call (or there is no active plan) the API returns
+**`402`** until the 30-day window resets. Admins and staff are internal and are
+**never** metered. Plans are granted/renewed by an admin under
+**Team & Clients → Subscriptions**.
+
+### Rate limiting
+Every non-admin caller is also throttled to a **per-minute** limit (default **20
+requests/min**, set per user by an admin in **Team & Clients**; `0` = unlimited).
+Exceeding it returns **`429`**. Admins are never throttled. (The limiter uses
+Redis and fails *open* — if Redis is down, requests are allowed rather than
+blocked.)
 
 A panel login (email + password) and an API key are **separate credentials**: a
 user may have one without the other, and either can be disabled/rotated without

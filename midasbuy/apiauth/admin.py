@@ -35,7 +35,8 @@ class UserAdmin(DjangoUserAdmin):
         (None, {"fields": ("email", "password")}),
         ("Profile", {"fields": ("name",)}),
         ("Role & capabilities", {
-            "fields": ("role", "can_order", "can_manage_accounts", "can_use_api"),
+            "fields": ("role", "can_order", "can_manage_accounts", "can_use_api",
+                       "rate_limit_per_min"),
         }),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser",
                                     "groups", "user_permissions")}),

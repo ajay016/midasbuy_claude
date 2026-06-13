@@ -1,0 +1,174 @@
+{% extends "redeem/base.html" %}
+{% block title %}Bulk operations · Midasbuy Panel{% endblock %}
+{% block topbar_title %}Bulk operations{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">Bulk operations</h1>
+  <div class="sub">Look up many players, or validate / redeem many codes for one player.
+    Jobs run in the background — results appear below as they finish.</div>
+</div>
+
+{% if not accounts %}
+<div class="no-accounts">No logged-in Midasbuy accounts available. Ask an admin to add and log one in.</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:18px;">
+  <div class="grid" style="grid-template-columns:1fr 1fr;">
+    <div class="field">
+      <label>Operation</label>
+      <select id="op">
+        <option value="player-info">Player lookup (many IDs)</option>
+        <option value="code-status">Code status (one player, many codes)</option>
+        <option value="redeem">Redeem (one player, many codes)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Account</label>
+      <select id="account">
+        {% for acct in accounts %}<option value="{{ acct.pk }}">{{ acct.label }} ({{ acct.email }})</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr;">
+    <div class="field">
+      <label>Country</label>
+      <select id="country">
+        <option value="bd">BD</option><option value="us">US</option><option value="id">ID</option>
+        <option value="ph">PH</option><option value="my">MY</option><option value="pk">PK</option>
+        <option value="in">IN</option><option value="tr">TR</option><option value="br">BR</option>
+        <option value="sa">SA</option>
+      </select>
+    </div>
+    <div class="field" id="playerIdField" style="display:none;">
+      <label>Player ID</label>
+      <input id="playerId" type="text" placeholder="e.g. 5123456789" autocomplete="off" />
+    </div>
+  </div>
+
+  <div class="field" id="playerIdsField">
+    <label>Player IDs (one per line)</label>
+    <textarea id="playerIds" rows="6" placeholder="5123456789&#10;5987654321"></textarea>
+  </div>
+  <div class="field" id="codesField" style="display:none;">
+    <label>Pin codes (one per line)</label>
+    <textarea id="codes" rows="6" placeholder="ABCD-EFGH-1234-5678&#10;WXYZ-1234-5678-9012"></textarea>
+  </div>
+
+  <button class="btn btn-primary" id="runBtn" onclick="runBulk()" {% if not accounts %}disabled{% endif %}>Run job</button>
+  <div id="status" class="status" style="margin-top:14px;"></div>
+
+  <div id="progressWrap" style="display:none;margin-top:14px;">
+    <div style="height:8px;background:#121218;border-radius:4px;overflow:hidden;">
+      <div id="progressBar" style="height:100%;width:0;background:var(--primary);transition:width .3s;"></div>
+    </div>
+    <div id="progressText" class="muted" style="font-size:12px;margin-top:6px;"></div>
+  </div>
+</div>
+
+<div id="results" style="display:none;">
+  <div class="card">
+    <div class="account-name" style="margin-bottom:12px;">Results <span id="resultSummary" class="muted" style="font-weight:400;font-size:12px;"></span></div>
+    <table class="table">
+      <thead><tr><th>Player ID</th><th>Code</th><th>Status</th><th>Message</th></tr></thead>
+      <tbody id="resultRows"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const API_TOKEN = "{{ api_token|escapejs }}";
+  const headers = () => ({ "Authorization": "Bearer " + API_TOKEN, "Content-Type": "application/json" });
+
+  const opSel = document.getElementById("op");
+  opSel.addEventListener("change", syncFields);
+  function syncFields() {
+    const op = opSel.value;
+    const single = op === "code-status" || op === "redeem";
+    document.getElementById("playerIdField").style.display = single ? "" : "none";
+    document.getElementById("codesField").style.display = single ? "" : "none";
+    document.getElementById("playerIdsField").style.display = single ? "none" : "";
+  }
+  syncFields();
+
+  function setStatus(type, html) {
+    const el = document.getElementById("status");
+    el.className = "status show " + type; el.innerHTML = html;
+  }
+  const lines = (id) => document.getElementById(id).value.split("\n").map(s => s.trim()).filter(Boolean);
+
+  async function runBulk() {
+    const op = opSel.value;
+    const account_id = parseInt(document.getElementById("account").value, 10);
+    const country_code = document.getElementById("country").value;
+    let url, payload;
+
+    if (op === "player-info") {
+      const player_ids = lines("playerIds");
+      if (!player_ids.length) return setStatus("error", "Enter at least one player ID.");
+      url = "/api/bulk/player-info"; payload = { account_id, country_code, player_ids };
+    } else {
+      const player_id = document.getElementById("playerId").value.trim();
+      const pin_codes = lines("codes");
+      if (!player_id) return setStatus("error", "Enter the player ID.");
+      if (!pin_codes.length) return setStatus("error", "Enter at least one code.");
+      url = op === "redeem" ? "/api/bulk/redeem" : "/api/bulk/code-status";
+      payload = { account_id, country_code, player_id, pin_codes };
+    }
+
+    const btn = document.getElementById("runBtn");
+    btn.disabled = true;
+    document.getElementById("results").style.display = "none";
+    setStatus("loading", '<span class="spinner"></span>Submitting job…');
+    try {
+      const r = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Request failed.");
+      setStatus("loading", '<span class="spinner"></span>Job #' + data.job_id + ' running…');
+      document.getElementById("progressWrap").style.display = "block";
+      pollJob(data.job_id);
+    } catch (e) {
+      setStatus("error", e.message || "Network error.");
+      btn.disabled = false;
+    }
+  }
+
+  async function pollJob(jobId) {
+    try {
+      const r = await fetch("/api/bulk/jobs/" + jobId, { headers: { "Authorization": "Bearer " + API_TOKEN } });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "Could not read job.");
+      const pct = d.progress_percent || 0;
+      document.getElementById("progressBar").style.width = pct + "%";
+      document.getElementById("progressText").textContent =
+        `${d.processed_items || (d.succeeded_items + d.failed_items)} / ${d.total_items} processed · ${d.status}`;
+      const done = pct >= 100 || d.status === "completed" || d.status === "failed";
+      if (!done) return setTimeout(() => pollJob(jobId), 2000);
+      renderResults(d);
+      setStatus("success", `Job #${jobId} finished — ${d.succeeded_items} ok, ${d.failed_items} failed.`);
+      document.getElementById("runBtn").disabled = false;
+    } catch (e) {
+      setStatus("error", e.message || "Network error while polling.");
+      document.getElementById("runBtn").disabled = false;
+    }
+  }
+
+  function renderResults(d) {
+    const rows = (d.items || []).map(i => {
+      const ok = i.success;
+      const badge = ok ? '<span class="badge badge-green">ok</span>'
+                       : '<span class="badge badge-red">' + (i.status || "failed") + '</span>';
+      return `<tr><td>${i.player_id || ""}${i.username ? ' <span class="muted">(' + i.username + ')</span>' : ''}</td>`
+           + `<td class="muted">${i.pin_code || "—"}</td><td>${badge}</td>`
+           + `<td class="muted">${i.message || i.product_name || ""}</td></tr>`;
+    }).join("");
+    document.getElementById("resultRows").innerHTML = rows || '<tr><td colspan="4" class="empty">No items.</td></tr>';
+    document.getElementById("resultSummary").textContent =
+      `· ${d.total_items} total, ${d.succeeded_items} ok, ${d.failed_items} failed`;
+    document.getElementById("results").style.display = "block";
+  }
+</script>
+{% endblock %}

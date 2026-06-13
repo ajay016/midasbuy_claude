@@ -10,6 +10,7 @@ from apiauth.models import ApiKey
 from billing.models import Subscription
 from apiauth.panel import (
     manage_users_required,
+    order_required,
     panel_login_required,
     use_api_required,
 )
@@ -73,6 +74,21 @@ def index(request):
     )
 
 
+@order_required
+def bulk_page(request):
+    """Panel UI for bulk lookups / code-status / redeem. Calls /api/bulk/* with a
+    short-lived JWT, so usage is metered against the user's PANEL plan."""
+    from apiauth.security import make_access_token
+
+    user = request.user
+    accounts = MidasbuyAccount.objects.filter(status=1)
+    return render(
+        request,
+        "redeem/bulk.html",
+        {"accounts": accounts, "api_token": make_access_token(user.id)},
+    )
+
+
 # ── Team management (admin only) ───────────────────────────────────────────────
 _ROLE_DEFAULT_CAPS = {
     User.ROLE_ADMIN: {"can_order": True, "can_manage_accounts": True, "can_use_api": True},
@@ -91,6 +107,10 @@ def _read_user_form(request):
     role = request.POST.get("role") or User.ROLE_CLIENT
     if role not in dict(User.ROLE_CHOICES):
         role = User.ROLE_CLIENT
+    try:
+        rate = int(request.POST.get("rate_limit_per_min"))
+    except (TypeError, ValueError):
+        rate = 20
     return {
         "name": (request.POST.get("name") or "").strip(),
         "email": (request.POST.get("email") or "").strip().lower(),
@@ -98,6 +118,7 @@ def _read_user_form(request):
         "can_order": bool(request.POST.get("can_order")),
         "can_manage_accounts": bool(request.POST.get("can_manage_accounts")),
         "can_use_api": bool(request.POST.get("can_use_api")),
+        "rate_limit_per_min": max(0, rate),
         "password": request.POST.get("password") or "",
     }
 
@@ -110,6 +131,7 @@ def _apply_role_flags(obj, data):
     # Admins manage the panel/admin site; staff & clients do not.
     obj.is_staff = data["role"] == User.ROLE_ADMIN
     obj.is_superuser = data["role"] == User.ROLE_ADMIN
+    obj.rate_limit_per_min = data["rate_limit_per_min"]
 
 
 @manage_users_required

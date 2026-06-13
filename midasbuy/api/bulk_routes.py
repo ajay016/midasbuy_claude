@@ -19,7 +19,7 @@ from .bulk_schemas import (
     BulkJobResponse,
     BulkPlayerInfoRequest,
 )
-from .dependencies import require_order
+from .dependencies import charge, require_order
 
 logger = logging.getLogger("api")
 # Every /bulk/* route requires authentication AND the order capability
@@ -117,9 +117,11 @@ def _get_items(job_id: int, limit: int, offset: int):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 @router.post("/player-info", response_model=BulkJobResponse,
              summary="Bulk player lookup")
-async def bulk_player_info(body: BulkPlayerInfoRequest):
+async def bulk_player_info(body: BulkPlayerInfoRequest,
+                           identity: dict = Depends(require_order)):
     """Look up many player UIDs. Poll the job (or set webhook_url) for the
     valid/invalid split."""
+    await charge(identity, 1)  # player lookup: per request, not per UID
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": pid} for pid in body.player_ids]
@@ -130,8 +132,9 @@ async def bulk_player_info(body: BulkPlayerInfoRequest):
 
 @router.post("/code-status", response_model=BulkJobResponse,
              summary="Bulk code status check (valid/used/invalid)")
-async def bulk_code_status(body: BulkCodeRequest):
+async def bulk_code_status(body: BulkCodeRequest, identity: dict = Depends(require_order)):
     """For one player, check many codes. Does NOT redeem."""
+    await charge(identity, len(body.pin_codes))  # one upstream call per code
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}
@@ -142,8 +145,9 @@ async def bulk_code_status(body: BulkCodeRequest):
 
 
 @router.post("/redeem", response_model=BulkJobResponse, summary="Bulk redeem")
-async def bulk_redeem(body: BulkCodeRequest):
+async def bulk_redeem(body: BulkCodeRequest, identity: dict = Depends(require_order)):
     """For one player, redeem many codes (lookup -> validate -> redeem each)."""
+    await charge(identity, len(body.pin_codes))  # one upstream redeem per code
     if not await sync_to_async(_account_ok)(body.account_id):
         raise HTTPException(404, f"account_id {body.account_id} not found")
     rows = [{"player_id": body.player_id, "pin_code": c, "zone_id": body.zone_id}

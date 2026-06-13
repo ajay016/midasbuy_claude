@@ -12,6 +12,7 @@ Both resolve to the same User. Use it on a route with:
         ...
 """
 import logging
+import time
 
 from asgiref.sync import sync_to_async
 from fastapi import Depends, HTTPException, Request
@@ -135,9 +136,39 @@ require_api_access = require_capability(
 )
 
 
-# ── Metered ordering ───────────────────────────────────────────────────────────
-def _meter_sync(user_id: int, role: str, plan: str) -> str | None:
-    """Charge one request against the client's plan. Returns an error string to
+# ── Rate limiting (per user, per minute) ───────────────────────────────────────
+def _rate_ok(user_id: int, limit: int) -> bool:
+    """Fixed-window per-minute limiter in Redis. 0 = unlimited.
+
+    Fails OPEN (allows) if Redis is unreachable — unlike replay protection, a
+    missing rate limiter shouldn't take the whole API down."""
+    if not limit or limit <= 0:
+        return True
+    from django.conf import settings
+
+    try:
+        import redis
+
+        client = redis.from_url(settings.CELERY_BROKER_URL)
+        window = int(time.time() // 60)
+        key = f"ratelimit:{user_id}:{window}"
+        n = client.incr(key)
+        if n == 1:
+            client.expire(key, 90)
+        return n <= limit
+    except Exception:
+        logger.warning("[RATE] limiter unavailable; allowing request")
+        return True
+
+
+def plan_for(identity: dict) -> str:
+    """Which meter a request draws down: dashboard (JWT) -> panel, API (HMAC) -> api."""
+    return "panel" if identity.get("auth") == "jwt" else "api"
+
+
+# ── Quota metering ─────────────────────────────────────────────────────────────
+def _charge_sync(user_id: int, role: str, plan: str, n: int) -> str | None:
+    """Charge ``n`` units against the client's plan. Returns an error string to
     raise as 402, or None on success. Admins/staff are internal -> never metered."""
     from apiauth.models import User
 
@@ -149,24 +180,42 @@ def _meter_sync(user_id: int, role: str, plan: str) -> str | None:
     sub = Subscription.current_for(user_id, plan)
     if sub is None:
         return f"No active {plan} subscription. Ask an admin to enable it."
-    if not sub.consume():
-        return (f"Your {plan} request quota ({sub.request_limit}/{30} days) is used up. "
-                f"It resets on {sub.period_end:%Y-%m-%d}.")
+    if not sub.consume(n):
+        return (f"Your {plan} quota ({sub.request_limit} requests / 30 days) can't cover "
+                f"this ({n} request{'s' if n != 1 else ''}). It resets on "
+                f"{sub.period_end:%Y-%m-%d}.")
     return None
 
 
 async def require_order(identity: dict = Depends(require_auth)) -> dict:
-    """Authenticated + permitted to order + has quota.
+    """Authenticated + permitted to order + within the per-minute rate limit.
 
-    The plan charged depends on how the caller authenticated: dashboard/browser
-    (JWT) draws down the PANEL plan; server-to-server (HMAC) draws down the API
-    plan — so the two are metered independently.
-    """
+    NOTE: this does NOT charge quota — call ``charge()`` from the endpoint so the
+    cost can vary (per-request for lookups, per-item for bulk redeem)."""
     if not identity.get("can_order"):
         raise HTTPException(status_code=403,
                             detail="Your account isn't permitted to place orders.")
-    plan = "panel" if identity.get("auth") == "jwt" else "api"
-    err = await sync_to_async(_meter_sync)(identity["user_id"], identity.get("role"), plan)
+    if not identity.get("is_admin"):  # admins are never rate limited
+        ok = await sync_to_async(_rate_ok)(
+            identity["user_id"], identity.get("rate_limit_per_min", 20)
+        )
+        if not ok:
+            raise HTTPException(status_code=429,
+                                detail="Rate limit exceeded. Slow down and retry shortly.")
+    return identity
+
+
+async def charge(identity: dict, n: int = 1) -> None:
+    """Charge ``n`` request-units against the caller's meter (402 if it can't cover).
+
+    The plan depends on how they authenticated (JWT -> panel, HMAC -> api), so the
+    two meters are independent. Cost per call:
+      * player lookups (single + bulk)  -> 1 (per request)
+      * single redeem / code-status     -> 1
+      * bulk redeem / bulk code-status  -> one per item (matches upstream calls)
+    """
+    err = await sync_to_async(_charge_sync)(
+        identity["user_id"], identity.get("role"), plan_for(identity), n
+    )
     if err:
         raise HTTPException(status_code=402, detail=err)
-    return identity
