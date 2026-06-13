@@ -7,6 +7,7 @@ from django.views.decorators.http import require_POST
 
 from accounts.models import MidasbuyAccount
 from apiauth.models import ApiKey
+from billing.models import Subscription
 from apiauth.panel import (
     manage_users_required,
     panel_login_required,
@@ -59,10 +60,16 @@ def index(request):
         if user.allowed_to_order
         else MidasbuyAccount.objects.none()
     )
+    # Clients see their own quota usage; admins/staff are unlimited.
+    subs = None
+    if user.role == User.ROLE_CLIENT:
+        summary = Subscription.summary_for(user)
+        subs = [(Subscription.PLAN_PANEL, summary[Subscription.PLAN_PANEL]),
+                (Subscription.PLAN_API, summary[Subscription.PLAN_API])]
     return render(
         request,
         "redeem/index.html",
-        {"accounts": accounts, "api_token": make_access_token(user.id)},
+        {"accounts": accounts, "api_token": make_access_token(user.id), "subs": subs},
     )
 
 
@@ -158,11 +165,15 @@ def team_edit(request, pk):
                 messages.success(request, "Saved.")
                 return redirect("team_edit", pk=obj.pk)
 
+    summary = Subscription.summary_for(obj)
+    plan_rows = [(Subscription.PLAN_PANEL, summary[Subscription.PLAN_PANEL]),
+                 (Subscription.PLAN_API, summary[Subscription.PLAN_API])]
     return render(
         request,
         "redeem/team_form.html",
         {"error": error, "obj": obj, "keys": obj.api_keys.all(),
-         "secret_once": secret_once, "role_defaults": _ROLE_DEFAULT_CAPS},
+         "secret_once": secret_once, "role_defaults": _ROLE_DEFAULT_CAPS,
+         "plan_rows": plan_rows},
     )
 
 
@@ -200,6 +211,33 @@ def team_apikey_revoke(request, pk, key_id):
     obj = get_object_or_404(User, pk=pk)
     ApiKey.objects.filter(user=obj, key_id=key_id).update(is_active=False)
     messages.success(request, "Key revoked.")
+    return redirect("team_edit", pk=pk)
+
+
+@require_POST
+@manage_users_required
+def team_subscription_set(request, pk, plan):
+    """Grant or renew a Panel/API subscription for a user (admin only)."""
+    obj = get_object_or_404(User, pk=pk)
+    if plan not in dict(Subscription.PLAN_CHOICES):
+        messages.error(request, "Unknown plan.")
+        return redirect("team_edit", pk=pk)
+    try:
+        limit = int(request.POST.get("request_limit") or Subscription._meta.get_field("request_limit").default)
+    except (TypeError, ValueError):
+        limit = 5000
+    limit = max(1, limit)
+    Subscription.grant(obj, plan, request_limit=limit)
+    messages.success(request, f"{plan.title()} plan granted ({limit} requests / 30 days).")
+    return redirect("team_edit", pk=pk)
+
+
+@require_POST
+@manage_users_required
+def team_subscription_revoke(request, pk, plan):
+    obj = get_object_or_404(User, pk=pk)
+    Subscription.objects.filter(user=obj, plan=plan).update(is_active=False)
+    messages.success(request, f"{plan.title()} plan deactivated.")
     return redirect("team_edit", pk=pk)
 
 

@@ -26,6 +26,20 @@ the API (server-side, not just hidden menus):
 - Data endpoints require the **order** capability → otherwise `403`.
 - `POST/GET/DELETE /api/auth/api-keys` require the **API access** capability → otherwise `403`.
 
+### Quotas & metering
+Clients are metered against two **independent** subscriptions ($30 / 5000 requests
+per 30 days by default):
+
+| Plan | Counts | Charged when |
+|------|--------|--------------|
+| **panel** | dashboard requests | the caller authenticates with a **JWT** |
+| **api** | server-to-server requests | the caller authenticates with **HMAC** |
+
+Each billable request consumes one unit; when the meter is empty (or there is no
+active plan) the API returns **`402`** until the 30-day window resets. Admins and
+staff are internal and are **never** metered. Plans are granted/renewed by an
+admin under **Team & Clients → Subscriptions**.
+
 A panel login (email + password) and an API key are **separate credentials**: a
 user may have one without the other, and either can be disabled/rotated without
 touching the other.

@@ -122,6 +122,43 @@
   </div>
   {% endif %}
 </div>
+
+{% if obj and obj.role == 'client' %}
+<div class="card" style="margin-top:18px;">
+  <div class="account-name" style="margin-bottom:4px;">Subscriptions</div>
+  <p class="account-email" style="margin-bottom:16px;line-height:1.5;">
+    Two independent meters — <b>Panel</b> covers dashboard requests, <b>API</b> covers signed
+    API requests. Default $30 / 5000 requests per 30 days.
+  </p>
+  <div class="grid" style="grid-template-columns:1fr 1fr;">
+    {% for plan, s in plan_rows %}
+    <div style="border:1px solid var(--border);border-radius:12px;padding:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <b style="text-transform:capitalize;">{{ plan }} plan</b>
+        {% if s and s.is_active %}<span class="badge badge-green">Active</span>
+        {% else %}<span class="badge badge-grey">None</span>{% endif %}
+      </div>
+      {% if s and s.is_active %}
+      <div class="muted" style="font-size:12px;margin:8px 0 6px;">{{ s.used }} / {{ s.request_limit }} used · resets {{ s.period_end|date:"M j, Y" }}</div>
+      <div style="height:6px;background:#121218;border-radius:4px;overflow:hidden;margin-bottom:12px;">
+        <div style="height:100%;width:{{ s.used_pct }}%;background:var(--primary);"></div>
+      </div>
+      {% endif %}
+      <form method="post" action="{% url 'team_subscription_set' obj.pk plan %}" style="display:flex;gap:8px;">
+        {% csrf_token %}
+        <input type="number" name="request_limit" value="{% if s %}{{ s.request_limit }}{% else %}5000{% endif %}" min="1" />
+        <button class="btn btn-outline" type="submit">{% if s and s.is_active %}Renew{% else %}Grant{% endif %}</button>
+      </form>
+      {% if s and s.is_active %}
+      <form method="post" action="{% url 'team_subscription_revoke' obj.pk plan %}" style="margin-top:8px;">
+        {% csrf_token %}<button class="btn btn-ghost" type="submit" style="width:100%;">Deactivate</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

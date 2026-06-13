@@ -301,7 +301,9 @@ GROUPS = [
                  "the network and captured requests can't be replayed. Create a key in the "
                  "panel under API Keys (the secret is shown once), drop the Client-setup "
                  "helper below into your code, and every endpoint sample calls it. (Browser "
-                 "dashboards may instead use a short-lived Bearer token from Login.)",
+                 "dashboards may instead use a short-lived Bearer token from Login.) "
+                 "Each data request counts against your API plan's quota; when it's exhausted "
+                 "the API replies 402 until the 30-day window resets.",
         "endpoints": [
             {
                 "id": "login", "method": "POST", "path": "/api/auth/login", "auth": False,

@@ -16,6 +16,10 @@ urlpatterns = [
     path("team/<int:pk>/keys/new/", views.team_apikey_create, name="team_apikey_create"),
     path("team/<int:pk>/keys/<str:key_id>/revoke/", views.team_apikey_revoke,
          name="team_apikey_revoke"),
+    path("team/<int:pk>/sub/<str:plan>/set/", views.team_subscription_set,
+         name="team_subscription_set"),
+    path("team/<int:pk>/sub/<str:plan>/revoke/", views.team_subscription_revoke,
+         name="team_subscription_revoke"),
 
     # Self-service API keys
     path("api-keys/", views.my_api_keys, name="my_api_keys"),

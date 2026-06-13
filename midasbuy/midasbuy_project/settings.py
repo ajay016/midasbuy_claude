@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "redeem",
     "bulk",
     "apiauth",
+    "billing",
 ]
 
 MIDDLEWARE = [

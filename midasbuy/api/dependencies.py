@@ -130,9 +130,43 @@ def require_capability(flag: str, detail: str):
     return _dep
 
 
-require_order = require_capability(
-    "can_order", "Your account isn't permitted to place orders."
-)
 require_api_access = require_capability(
     "can_use_api", "API access isn't enabled on your account."
 )
+
+
+# ── Metered ordering ───────────────────────────────────────────────────────────
+def _meter_sync(user_id: int, role: str, plan: str) -> str | None:
+    """Charge one request against the client's plan. Returns an error string to
+    raise as 402, or None on success. Admins/staff are internal -> never metered."""
+    from apiauth.models import User
+
+    if role != User.ROLE_CLIENT:
+        return None  # unlimited for admins and staff
+
+    from billing.models import Subscription
+
+    sub = Subscription.current_for(user_id, plan)
+    if sub is None:
+        return f"No active {plan} subscription. Ask an admin to enable it."
+    if not sub.consume():
+        return (f"Your {plan} request quota ({sub.request_limit}/{30} days) is used up. "
+                f"It resets on {sub.period_end:%Y-%m-%d}.")
+    return None
+
+
+async def require_order(identity: dict = Depends(require_auth)) -> dict:
+    """Authenticated + permitted to order + has quota.
+
+    The plan charged depends on how the caller authenticated: dashboard/browser
+    (JWT) draws down the PANEL plan; server-to-server (HMAC) draws down the API
+    plan — so the two are metered independently.
+    """
+    if not identity.get("can_order"):
+        raise HTTPException(status_code=403,
+                            detail="Your account isn't permitted to place orders.")
+    plan = "panel" if identity.get("auth") == "jwt" else "api"
+    err = await sync_to_async(_meter_sync)(identity["user_id"], identity.get("role"), plan)
+    if err:
+        raise HTTPException(status_code=402, detail=err)
+    return identity
