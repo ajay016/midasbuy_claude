@@ -383,9 +383,11 @@ body.app { display: block; align-items: stretch; padding: 0; }
   background: var(--primary-dim); border: 1px solid var(--primary-line);
   color: var(--primary); font-weight: 800; font-size: 15px; }
 
-/* Content region (transparent — holds the page heading + cards), centered */
+/* Content region (transparent — holds the page heading + cards), centered.
+   Modals are excluded from the width cap: they are position:fixed overlays that
+   must fill the whole viewport, not sit inside the 1040px content column. */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; }
-.main > * { width: 100%; max-width: 1040px; }
+.main > *:not(.modal-backdrop) { width: 100%; max-width: 1040px; }
 .main .page-head { margin-bottom: 22px; }
 .main .page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
 

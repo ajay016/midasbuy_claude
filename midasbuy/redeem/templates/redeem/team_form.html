@@ -20,7 +20,7 @@
 </div>
 {% endif %}
 
-<div class="grid" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);align-items:start;">
+<div class="grid" style="grid-template-columns:{% if obj %}minmax(0,1.4fr) minmax(0,1fr){% else %}minmax(0,560px){% endif %};justify-content:center;align-items:start;">
   <div class="card">
     <form method="post" action="{% if obj %}{% url 'team_edit' obj.pk %}{% else %}{% url 'team_add' %}{% endif %}">
       {% csrf_token %}
