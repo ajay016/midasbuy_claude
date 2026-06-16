@@ -1,1 +1,19 @@
+# Outer workspace repo (Midasbuy JS reference resources + the `midasbuy/` Django
+# project). The deployable project has its own, fuller .gitignore in midasbuy/.
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
