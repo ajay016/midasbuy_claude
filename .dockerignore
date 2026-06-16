@@ -32,3 +32,8 @@ staticfiles/
 xmidas_inputs.txt
 redeem_commit_capture.txt
 .DS_Store
+
+# Reverse-engineering reference resources — not needed in the runtime image
+resources/
+disasm_output.txt
+midasbuy_redeem_page.html
