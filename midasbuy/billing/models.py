@@ -24,20 +24,74 @@ PERIOD_DAYS = 30
 DEFAULT_LIMIT = 5000
 DEFAULT_PRICE_CENTS = 3000  # $30.00
 
+PLAN_PANEL = "panel"
+PLAN_API = "api"
+PLAN_CHOICES = [(PLAN_PANEL, "Panel"), (PLAN_API, "API")]
+
+
+class Package(models.Model):
+    """A reusable subscription package an admin can define once and assign to many
+    clients, instead of typing a raw request limit each time.
+
+    ``request_limit = NULL`` means *unlimited* (used for partner/internal plans that
+    are never capped but whose usage we still want to meter)."""
+
+    name = models.CharField(max_length=80)
+    plan = models.CharField(
+        max_length=10, choices=PLAN_CHOICES,
+        help_text="Which meter this package applies to (panel or API).",
+    )
+    request_limit = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Requests allowed per period. Leave blank for UNLIMITED.",
+    )
+    price_cents = models.PositiveIntegerField(default=DEFAULT_PRICE_CENTS)
+    period_days = models.PositiveIntegerField(default=PERIOD_DAYS)
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["plan", "price_cents", "name"]
+
+    def __str__(self):
+        cap = "unlimited" if self.request_limit is None else f"{self.request_limit}"
+        return f"{self.name} ({self.plan}, {cap}/{self.period_days}d)"
+
+    @property
+    def is_unlimited(self) -> bool:
+        return self.request_limit is None
+
+    @property
+    def price_dollars(self) -> str:
+        return f"{self.price_cents / 100:.2f}"
+
 
 class Subscription(models.Model):
-    PLAN_PANEL = "panel"
-    PLAN_API = "api"
-    PLAN_CHOICES = [(PLAN_PANEL, "Panel"), (PLAN_API, "API")]
+    PLAN_PANEL = PLAN_PANEL
+    PLAN_API = PLAN_API
+    PLAN_CHOICES = PLAN_CHOICES
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subscriptions"
     )
     plan = models.CharField(max_length=10, choices=PLAN_CHOICES)
 
-    request_limit = models.PositiveIntegerField(default=DEFAULT_LIMIT)
+    # NULL request_limit = unlimited (admins/partners): never rejected, still metered.
+    request_limit = models.PositiveIntegerField(
+        null=True, blank=True, default=DEFAULT_LIMIT,
+        help_text="Requests per period. NULL = unlimited (still counted).",
+    )
     price_cents = models.PositiveIntegerField(default=DEFAULT_PRICE_CENTS)
+    period_days = models.PositiveIntegerField(default=PERIOD_DAYS)
     is_active = models.BooleanField(default=True)
+
+    # Optional link to the catalog package this subscription was granted from.
+    package = models.ForeignKey(
+        Package, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="subscriptions",
+    )
 
     used = models.PositiveIntegerField(default=0)
     period_start = models.DateTimeField(default=timezone.now)
@@ -69,11 +123,23 @@ class Subscription(models.Model):
 
     # ── Derived state ──────────────────────────────────────────────────────────
     @property
-    def remaining(self) -> int:
+    def is_unlimited(self) -> bool:
+        return self.request_limit is None
+
+    @property
+    def remaining(self):
+        """Remaining requests, or None when unlimited."""
+        if self.request_limit is None:
+            return None
         return max(0, self.request_limit - self.used)
 
     @property
+    def limit_label(self) -> str:
+        return "∞" if self.request_limit is None else str(self.request_limit)
+
+    @property
     def used_pct(self) -> int:
+        # Unlimited plans have no bar to fill.
         if not self.request_limit:
             return 0
         return min(100, round(self.used / self.request_limit * 100))
@@ -88,7 +154,9 @@ class Subscription(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.period_end:
-            self.period_end = (self.period_start or timezone.now()) + timedelta(days=PERIOD_DAYS)
+            self.period_end = (self.period_start or timezone.now()) + timedelta(
+                days=self.period_days or PERIOD_DAYS
+            )
         super().save(*args, **kwargs)
 
     # ── Metering ───────────────────────────────────────────────────────────────
@@ -106,9 +174,10 @@ class Subscription(models.Model):
             sub = Subscription.objects.select_for_update().get(pk=self.pk)
             if now >= sub.period_end:  # window elapsed -> fresh allowance
                 sub.period_start = now
-                sub.period_end = now + timedelta(days=PERIOD_DAYS)
+                sub.period_end = now + timedelta(days=sub.period_days or PERIOD_DAYS)
                 sub.used = 0
-            if sub.used + n > sub.request_limit:
+            # request_limit is None -> unlimited: always allow, but still count usage.
+            if sub.request_limit is not None and sub.used + n > sub.request_limit:
                 sub.save(update_fields=["period_start", "period_end", "used", "updated_at"])
                 return False
             sub.used += n
@@ -118,22 +187,38 @@ class Subscription(models.Model):
         return True
 
     @classmethod
-    def grant(cls, user, plan: str, request_limit: int = DEFAULT_LIMIT,
-              price_cents: int = DEFAULT_PRICE_CENTS):
-        """Create or renew a subscription: activate, set the limit, reset the window."""
+    def grant(cls, user, plan: str, request_limit=DEFAULT_LIMIT,
+              price_cents: int = DEFAULT_PRICE_CENTS, period_days: int = PERIOD_DAYS,
+              package=None):
+        """Create or renew a subscription: activate, set the limit, reset the window.
+
+        ``request_limit=None`` grants an UNLIMITED plan (still metered)."""
         now = timezone.now()
         sub, _ = cls.objects.update_or_create(
             user=user, plan=plan,
             defaults={
                 "request_limit": request_limit,
                 "price_cents": price_cents,
+                "period_days": period_days or PERIOD_DAYS,
+                "package": package,
                 "is_active": True,
                 "used": 0,
                 "period_start": now,
-                "period_end": now + timedelta(days=PERIOD_DAYS),
+                "period_end": now + timedelta(days=period_days or PERIOD_DAYS),
             },
         )
         return sub
+
+    @classmethod
+    def grant_package(cls, user, package: "Package"):
+        """Grant/renew the subscription described by a catalog ``Package``."""
+        return cls.grant(
+            user, package.plan,
+            request_limit=package.request_limit,
+            price_cents=package.price_cents,
+            period_days=package.period_days,
+            package=package,
+        )
 
     @classmethod
     def summary_for(cls, user) -> dict:

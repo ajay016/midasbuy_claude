@@ -14,6 +14,7 @@ fold in "admin (or Django superuser) implies everything".
 Passwords are hashed (AbstractBaseUser). API secrets must be recoverable to verify
 HMAC signatures, so they're stored ENCRYPTED (Fernet, key outside the DB), not hashed.
 """
+import ipaddress
 import secrets
 
 from django.contrib.auth.models import (
@@ -57,16 +58,42 @@ class User(AbstractBaseUser, PermissionsMixin):
     ROLE_ADMIN = "admin"
     ROLE_STAFF = "staff"
     ROLE_CLIENT = "client"
+    ROLE_PARTNER = "partner"
     ROLE_CHOICES = [
         (ROLE_ADMIN, "Admin"),
         (ROLE_STAFF, "Staff"),
         (ROLE_CLIENT, "Client"),
+        (ROLE_PARTNER, "Partner"),
     ]
 
     name = models.CharField(max_length=120)
     email = models.EmailField(unique=True)
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_CLIENT)
+
+    # ── Partner / reseller model ────────────────────────────────────────────────
+    # A *partner* resells our API to their own end-customers. Each of those
+    # customers is a Client row whose ``partner`` points back at the partner that
+    # owns them. The partner manages only their own clients (panel + API).
+    partner = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="clients", limit_choices_to={"role": ROLE_PARTNER},
+        help_text="If set, the partner that owns this client.",
+    )
+    # Opaque per-client identifier. Because every request from a partner's website
+    # arrives with the SAME (partner's) source IP, the partner passes this value
+    # (header X-Client-Id) so we can attribute the request to the right client.
+    client_ref = models.CharField(
+        max_length=40, unique=True, blank=True, db_index=True,
+        help_text="Identifier the partner sends (X-Client-Id) to select this client.",
+    )
+    # Optional IP allow-list (comma/newline separated IPs or CIDR ranges). When set,
+    # signed API requests are only accepted from these addresses. Empty = no IP check.
+    allowed_ips = models.TextField(
+        blank=True, default="",
+        help_text="Optional allow-list of IPs/CIDRs (comma or newline separated). "
+                  "Empty = allow any source IP.",
+    )
 
     # Granular capabilities (ignored for admins/superusers, who get everything).
     can_order = models.BooleanField(
@@ -104,10 +131,53 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return f"{self.name} <{self.email}>"
 
+    def save(self, *args, **kwargs):
+        # Every user gets a stable, opaque client identifier the first time it's
+        # saved. Partners pass their clients' refs (X-Client-Id) on API calls.
+        if not self.client_ref:
+            self.client_ref = self._generate_client_ref()
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def _generate_client_ref(cls) -> str:
+        for _ in range(10):
+            ref = "cl_" + secrets.token_hex(8)
+            if not cls.objects.filter(client_ref=ref).exists():
+                return ref
+        return "cl_" + secrets.token_hex(16)
+
     # ── Role helpers ───────────────────────────────────────────────────────────
     @property
     def is_admin(self) -> bool:
         return self.role == self.ROLE_ADMIN or self.is_superuser
+
+    @property
+    def is_partner(self) -> bool:
+        return self.role == self.ROLE_PARTNER
+
+    # ── IP allow-list ──────────────────────────────────────────────────────────
+    def ip_allowed(self, ip: str) -> bool:
+        """True if ``ip`` is permitted. No allow-list configured -> any IP allowed."""
+        entries = [e.strip() for e in self.allowed_ips.replace("\n", ",").split(",")]
+        entries = [e for e in entries if e]
+        if not entries:
+            return True
+        if not ip:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        for entry in entries:
+            try:
+                if "/" in entry:
+                    if addr in ipaddress.ip_network(entry, strict=False):
+                        return True
+                elif addr == ipaddress.ip_address(entry):
+                    return True
+            except ValueError:
+                continue
+        return False
 
     @property
     def role_label(self) -> str:
@@ -127,18 +197,34 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     @property
     def allowed_to_manage_users(self) -> bool:
-        # Only admins ever manage other users.
+        # Only admins ever manage the full user/team table.
         return self.is_admin
+
+    @property
+    def allowed_to_manage_clients(self) -> bool:
+        # Admins manage everyone; partners manage their own clients.
+        return self.is_admin or self.is_partner
+
+    def owns_client(self, other: "User") -> bool:
+        """Whether this user may manage ``other`` as one of their clients."""
+        if self.is_admin:
+            return True
+        return self.is_partner and other.partner_id == self.id
 
     def capabilities(self) -> dict:
         """Flat snapshot used by the API auth layer and templates."""
         return {
             "role": self.role,
             "is_admin": self.is_admin,
+            "is_partner": self.is_partner,
+            "partner_id": self.partner_id,
+            "client_ref": self.client_ref,
+            "allowed_ips": self.allowed_ips,
             "can_order": self.allowed_to_order,
             "can_manage_accounts": self.allowed_to_manage_accounts,
             "can_use_api": self.allowed_to_use_api,
             "can_manage_users": self.allowed_to_manage_users,
+            "can_manage_clients": self.allowed_to_manage_clients,
             "rate_limit_per_min": self.rate_limit_per_min,
         }
 

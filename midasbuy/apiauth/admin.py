@@ -24,10 +24,11 @@ class UserAdmin(DjangoUserAdmin):
     add_form = UserCreateForm
     model = User
     ordering = ("-created_at",)
-    list_display = ("id", "name", "email", "role", "is_active", "created_at")
+    list_display = ("id", "name", "email", "role", "partner", "is_active", "created_at")
     list_filter = ("role", "is_active", "can_order", "can_use_api")
-    search_fields = ("name", "email")
-    readonly_fields = ("created_at", "updated_at", "last_login")
+    search_fields = ("name", "email", "client_ref")
+    autocomplete_fields = ("partner",)
+    readonly_fields = ("client_ref", "created_at", "updated_at", "last_login")
     inlines = [ApiKeyInline]
     actions = ["generate_api_key"]
 
@@ -37,6 +38,13 @@ class UserAdmin(DjangoUserAdmin):
         ("Role & capabilities", {
             "fields": ("role", "can_order", "can_manage_accounts", "can_use_api",
                        "rate_limit_per_min"),
+        }),
+        ("Partner / clients", {
+            "fields": ("partner", "client_ref", "allowed_ips"),
+            "description": "Set <b>partner</b> to mark this user as a client owned by "
+                           "that partner. <b>client_ref</b> is the X-Client-Id the "
+                           "partner sends. <b>allowed_ips</b> optionally restricts API "
+                           "source IPs (comma/CIDR).",
         }),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser",
                                     "groups", "user_permissions")}),
