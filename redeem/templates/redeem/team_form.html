@@ -35,11 +35,44 @@
       <div class="field">
         <label>Role</label>
         <select name="role" id="roleSelect">
-          <option value="client" {% if obj.role == 'client' %}selected{% endif %}>Client</option>
-          <option value="staff"  {% if obj.role == 'staff' %}selected{% endif %}>Staff</option>
-          <option value="admin"  {% if obj.role == 'admin' %}selected{% endif %}>Admin</option>
+          <option value="client"  {% if obj.role == 'client' %}selected{% endif %}>Client</option>
+          <option value="partner" {% if obj.role == 'partner' %}selected{% endif %}>Partner (reseller)</option>
+          <option value="staff"   {% if obj.role == 'staff' %}selected{% endif %}>Staff</option>
+          <option value="admin"   {% if obj.role == 'admin' %}selected{% endif %}>Admin</option>
         </select>
-        <p class="hint">Admins always have every capability below, regardless of the checkboxes.</p>
+        <p class="hint">Admins always have every capability below, regardless of the checkboxes.
+          A <b>partner</b> resells the API to their own clients.</p>
+      </div>
+
+      <!-- Owner applies only to clients; the JS below shows/hides it with the role. -->
+      <div class="field" id="partnerField" {% if obj.role != 'client' %}style="display:none;"{% endif %}>
+        <label>Owning partner</label>
+        <select name="partner">
+          <option value="">— None (direct client) —</option>
+          {% for p in partners %}
+          <option value="{{ p.pk }}" {% if obj.partner_id == p.pk %}selected{% endif %}>{{ p.name }} ({{ p.email }})</option>
+          {% endfor %}
+        </select>
+        <p class="hint">If this client belongs to a partner, requests are attributed to it
+          via its identifier below.</p>
+      </div>
+
+      {% if obj %}
+      <div class="field">
+        <label>Client identifier (X-Client-Id)</label>
+        <input type="text" value="{{ obj.client_ref }}" readonly
+               style="font-family:ui-monospace,monospace;background:#0d0d12;" />
+        <p class="hint">A partner sends this value in the <code>X-Client-Id</code> header so
+          we can attribute a request to this client. Auto-generated, read-only.</p>
+      </div>
+      {% endif %}
+
+      <div class="field">
+        <label>Allowed IPs <span class="muted" style="font-weight:400;">(optional)</span></label>
+        <textarea name="allowed_ips" rows="2"
+                  placeholder="e.g. 203.0.113.7, 198.51.100.0/24">{{ obj.allowed_ips|default:'' }}</textarea>
+        <p class="hint">Comma or newline separated IPs / CIDR ranges. When set, signed API
+          requests are only accepted from these addresses. Empty = any IP.</p>
       </div>
 
       <div class="field">
@@ -130,15 +163,16 @@
   {% endif %}
 </div>
 
-{% if obj and obj.role == 'client' %}
+{% if obj and obj.role == 'client' or obj and obj.role == 'partner' %}
 <div class="card" style="margin-top:18px;">
   <div class="account-name" style="margin-bottom:4px;">Subscriptions</div>
   <p class="account-email" style="margin-bottom:16px;line-height:1.5;">
     Two independent meters — <b>Panel</b> covers dashboard requests, <b>API</b> covers signed
-    API requests. Default $30 / 5000 requests per 30 days.
+    API requests. Grant a <a href="{% url 'package_list' %}">package</a>, or set a custom limit
+    (leave blank / tick <b>Unlimited</b> for an uncapped, still-metered plan).
   </p>
   <div class="grid" style="grid-template-columns:1fr 1fr;">
-    {% for plan, s in plan_rows %}
+    {% for plan, s, plan_packages in plan_rows %}
     <div style="border:1px solid var(--border);border-radius:12px;padding:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <b style="text-transform:capitalize;">{{ plan }} plan</b>
@@ -146,15 +180,28 @@
         {% else %}<span class="badge badge-grey">None</span>{% endif %}
       </div>
       {% if s and s.is_active %}
-      <div class="muted" style="font-size:12px;margin:8px 0 6px;">{{ s.used }} / {{ s.request_limit }} used · resets {{ s.period_end|date:"M j, Y" }}</div>
+      <div class="muted" style="font-size:12px;margin:8px 0 6px;">{{ s.used }} / {{ s.limit_label }} used · resets {{ s.period_end|date:"M j, Y" }}{% if s.package %} · {{ s.package.name }}{% endif %}</div>
       <div style="height:6px;background:#121218;border-radius:4px;overflow:hidden;margin-bottom:12px;">
         <div style="height:100%;width:{{ s.used_pct }}%;background:var(--primary);"></div>
       </div>
       {% endif %}
-      <form method="post" action="{% url 'team_subscription_set' obj.pk plan %}" style="display:flex;gap:8px;">
+      <form method="post" action="{% url 'team_subscription_set' obj.pk plan %}">
         {% csrf_token %}
-        <input type="number" name="request_limit" value="{% if s %}{{ s.request_limit }}{% else %}5000{% endif %}" min="1" />
-        <button class="btn btn-outline" type="submit">{% if s and s.is_active %}Renew{% else %}Grant{% endif %}</button>
+        {% if plan_packages %}
+        <select name="package_id" style="margin-bottom:8px;">
+          <option value="">— Custom limit below —</option>
+          {% for pkg in plan_packages %}
+          <option value="{{ pkg.pk }}">{{ pkg.name }} · {% if pkg.is_unlimited %}∞{% else %}{{ pkg.request_limit }}{% endif %} / {{ pkg.period_days }}d · ${{ pkg.price_dollars }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" name="request_limit" value="{% if s and not s.is_unlimited %}{{ s.request_limit }}{% else %}5000{% endif %}" min="1" placeholder="Limit" />
+          <button class="btn btn-outline" type="submit">{% if s and s.is_active %}Renew{% else %}Grant{% endif %}</button>
+        </div>
+        <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:8px;font-weight:400;">
+          <input type="checkbox" name="unlimited" style="width:auto;" {% if s.is_unlimited %}checked{% endif %} /> Unlimited (uncapped, still metered)
+        </label>
       </form>
       {% if s and s.is_active %}
       <form method="post" action="{% url 'team_subscription_revoke' obj.pk plan %}" style="margin-top:8px;">
@@ -172,20 +219,30 @@
 <script>
   // When creating a user, pre-tick sensible default capabilities for the role.
   const ROLE_DEFAULTS = {
-    admin:  { can_order: true,  can_manage_accounts: true,  can_use_api: true  },
-    staff:  { can_order: true,  can_manage_accounts: false, can_use_api: false },
-    client: { can_order: true,  can_manage_accounts: false, can_use_api: true  },
+    admin:   { can_order: true,  can_manage_accounts: true,  can_use_api: true  },
+    staff:   { can_order: true,  can_manage_accounts: false, can_use_api: false },
+    client:  { can_order: true,  can_manage_accounts: false, can_use_api: true  },
+    partner: { can_order: true,  can_manage_accounts: false, can_use_api: true  },
   };
   const isNew = {% if obj %}false{% else %}true{% endif %};
   const sel = document.getElementById("roleSelect");
-  if (sel && isNew) {
+  const partnerField = document.getElementById("partnerField");
+  function syncRoleUI() {
+    // The owning-partner picker only makes sense for clients.
+    if (partnerField) partnerField.style.display = sel.value === "client" ? "" : "none";
+  }
+  if (sel) {
     sel.addEventListener("change", () => {
-      const d = ROLE_DEFAULTS[sel.value] || {};
-      for (const [name, val] of Object.entries(d)) {
-        const cb = document.querySelector(`#permGrid input[name="${name}"]`);
-        if (cb) cb.checked = val;
+      if (isNew) {
+        const d = ROLE_DEFAULTS[sel.value] || {};
+        for (const [name, val] of Object.entries(d)) {
+          const cb = document.querySelector(`#permGrid input[name="${name}"]`);
+          if (cb) cb.checked = val;
+        }
       }
+      syncRoleUI();
     });
+    syncRoleUI();
   }
 </script>
 {% endblock %}

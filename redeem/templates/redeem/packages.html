@@ -1,0 +1,104 @@
+{% extends "redeem/base.html" %}
+{% block title %}Packages · Midasbuy Panel{% endblock %}
+{% block topbar_title %}Subscription Packages{% endblock %}
+
+{% block content %}
+<div class="page-head" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+  <div>
+    <h1 style="text-align:left;">Subscription Packages</h1>
+    <div class="sub">Reusable plans you can grant to clients and partners. Leave the limit
+      blank (or tick Unlimited) for an uncapped, still-metered plan.</div>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr);align-items:start;">
+  <!-- Create -->
+  <div class="card">
+    <div class="account-name" style="margin-bottom:14px;">New package</div>
+    <form method="post" action="{% url 'package_create' %}">
+      {% csrf_token %}
+      <div class="field">
+        <label>Name</label>
+        <input type="text" name="name" placeholder="e.g. Starter, Pro, Partner-Unlimited" required />
+      </div>
+      <div class="field">
+        <label>Meter</label>
+        <select name="plan">
+          {% for value, label in plan_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>Request limit / period</label>
+        <input type="number" name="request_limit" min="1" placeholder="5000 (blank = unlimited)" />
+        <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:8px;font-weight:400;">
+          <input type="checkbox" name="unlimited" style="width:auto;" /> Unlimited
+        </label>
+      </div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field" style="margin:0;">
+          <label>Price (USD)</label>
+          <input type="number" name="price" min="0" step="0.01" value="30" />
+        </div>
+        <div class="field" style="margin:0;">
+          <label>Period (days)</label>
+          <input type="number" name="period_days" min="1" value="30" />
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:16px;">Create package</button>
+    </form>
+  </div>
+
+  <!-- Existing -->
+  <div class="card" style="padding:8px 8px;">
+    <table class="table">
+      <thead>
+        <tr><th>Package</th><th>Meter</th><th>Limit</th><th>Price</th><th>Period</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for p in packages %}
+        <tr>
+          <td><div style="font-weight:700;">{{ p.name }}</div></td>
+          <td class="muted" style="text-transform:capitalize;">{{ p.plan }}</td>
+          <td>{% if p.is_unlimited %}<span class="badge badge-grey">∞ unlimited</span>{% else %}{{ p.request_limit }}{% endif %}</td>
+          <td class="muted">${{ p.price_dollars }}</td>
+          <td class="muted">{{ p.period_days }}d</td>
+          <td>{% if p.is_active %}<span class="badge badge-green">Active</span>{% else %}<span class="badge badge-grey">Off</span>{% endif %}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-ghost" type="button" onclick="document.getElementById('edit-{{ p.pk }}').classList.toggle('show-row')">Edit</button>
+          </td>
+        </tr>
+        <tr id="edit-{{ p.pk }}" class="edit-row" hidden>
+          <td colspan="7" style="background:rgba(255,255,255,0.02);">
+            <form method="post" action="{% url 'package_edit' p.pk %}" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:6px 4px;">
+              {% csrf_token %}
+              <div><label style="font-size:11px;">Name</label><input type="text" name="name" value="{{ p.name }}" style="width:160px;" /></div>
+              <div><label style="font-size:11px;">Meter</label>
+                <select name="plan" style="width:110px;">
+                  {% for value, label in plan_choices %}<option value="{{ value }}" {% if p.plan == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+              </div>
+              <div><label style="font-size:11px;">Limit</label><input type="number" name="request_limit" min="1" value="{% if not p.is_unlimited %}{{ p.request_limit }}{% endif %}" placeholder="∞" style="width:90px;" /></div>
+              <div><label style="font-size:11px;">Price $</label><input type="number" name="price" min="0" step="0.01" value="{{ p.price_dollars }}" style="width:80px;" /></div>
+              <div><label style="font-size:11px;">Days</label><input type="number" name="period_days" min="1" value="{{ p.period_days }}" style="width:70px;" /></div>
+              <label class="muted" style="display:flex;gap:5px;align-items:center;font-size:12px;font-weight:400;"><input type="checkbox" name="unlimited" style="width:auto;" {% if p.is_unlimited %}checked{% endif %} /> ∞</label>
+              <label class="muted" style="display:flex;gap:5px;align-items:center;font-size:12px;font-weight:400;"><input type="checkbox" name="is_active" style="width:auto;" {% if p.is_active %}checked{% endif %} /> Active</label>
+              <button class="btn btn-outline" type="submit">Save</button>
+            </form>
+            <form method="post" action="{% url 'package_delete' p.pk %}" onsubmit="return confirm('Delete package “{{ p.name|escapejs }}”? Existing subscriptions keep running.');" style="padding:0 4px 6px;">
+              {% csrf_token %}<button class="btn btn-ghost" type="submit" style="color:#ff7a7a;">Delete package</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="empty">No packages yet — create one on the left.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<style>
+  tr.edit-row.show-row { display: table-row; }
+  tr.edit-row.show-row[hidden] { display: table-row; }
+</style>
+{% endblock %}

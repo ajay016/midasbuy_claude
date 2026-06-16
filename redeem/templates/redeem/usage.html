@@ -1,0 +1,34 @@
+{% extends "redeem/base.html" %}
+{% block title %}Usage · Midasbuy Panel{% endblock %}
+{% block topbar_title %}Usage Overview{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">Usage Overview</h1>
+  <div class="sub">Panel and API meters for every client and partner. Usage resets at the end
+    of each plan's window.</div>
+</div>
+
+<div class="card" style="padding:8px 8px;">
+  <table class="table">
+    <thead>
+      <tr><th>User</th><th>Role</th><th style="width:32%;">Panel meter</th><th style="width:32%;">API meter</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <div style="font-weight:700;"><a href="{% url 'team_edit' row.user.pk %}">{{ row.user.name }}</a></div>
+          <div class="muted" style="font-size:12px;">{{ row.user.email }}</div>
+        </td>
+        <td><span class="role-pill {{ row.user.role }}">{{ row.user.role_label }}</span></td>
+        {% include "redeem/_meter_cell.html" with s=row.panel %}
+        {% include "redeem/_meter_cell.html" with s=row.api %}
+      </tr>
+      {% empty %}
+      <tr><td colspan="4" class="empty">No clients or partners yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

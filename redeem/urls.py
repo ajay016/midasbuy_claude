@@ -22,6 +22,15 @@ urlpatterns = [
     path("team/<int:pk>/sub/<str:plan>/revoke/", views.team_subscription_revoke,
          name="team_subscription_revoke"),
 
+    # Subscription packages (admin only)
+    path("subscriptions/", views.package_list, name="package_list"),
+    path("subscriptions/new/", views.package_create, name="package_create"),
+    path("subscriptions/<int:pk>/edit/", views.package_edit, name="package_edit"),
+    path("subscriptions/<int:pk>/delete/", views.package_delete, name="package_delete"),
+
+    # Usage overview (admin only)
+    path("usage/", views.usage_overview, name="usage_overview"),
+
     # Self-service API keys
     path("api-keys/", views.my_api_keys, name="my_api_keys"),
     path("api-keys/new/", views.my_apikey_create, name="my_apikey_create"),

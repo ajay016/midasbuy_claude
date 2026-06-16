@@ -1,0 +1,15 @@
+{% comment %}A single usage meter cell. Expects `s` = Subscription or None.{% endcomment %}
+<td>
+  {% if s and s.is_active %}
+    {% if s.is_unlimited %}
+      <div class="muted" style="font-size:12px;">{{ s.used }} used · <span class="badge badge-grey">∞ unlimited</span></div>
+    {% else %}
+      <div class="muted" style="font-size:12px;margin-bottom:5px;">{{ s.used }} / {{ s.request_limit }} · resets {{ s.period_end|date:"M j" }}</div>
+      <div style="height:6px;background:#121218;border-radius:4px;overflow:hidden;">
+        <div style="height:100%;width:{{ s.used_pct }}%;background:{% if s.used_pct >= 90 %}var(--accent){% else %}var(--primary){% endif %};"></div>
+      </div>
+    {% endif %}
+  {% else %}
+    <span class="muted">—</span>
+  {% endif %}
+</td>

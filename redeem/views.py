@@ -7,7 +7,7 @@ from django.views.decorators.http import require_POST
 
 from accounts.models import MidasbuyAccount
 from apiauth.models import ApiKey
-from billing.models import Subscription
+from billing.models import Package, Subscription
 from apiauth.panel import (
     manage_users_required,
     order_required,
@@ -94,6 +94,7 @@ _ROLE_DEFAULT_CAPS = {
     User.ROLE_ADMIN: {"can_order": True, "can_manage_accounts": True, "can_use_api": True},
     User.ROLE_STAFF: {"can_order": True, "can_manage_accounts": False, "can_use_api": False},
     User.ROLE_CLIENT: {"can_order": True, "can_manage_accounts": False, "can_use_api": True},
+    User.ROLE_PARTNER: {"can_order": True, "can_manage_accounts": False, "can_use_api": True},
 }
 
 
@@ -120,6 +121,8 @@ def _read_user_form(request):
         "can_use_api": bool(request.POST.get("can_use_api")),
         "rate_limit_per_min": max(0, rate),
         "password": request.POST.get("password") or "",
+        "partner_id": (request.POST.get("partner") or "").strip(),
+        "allowed_ips": (request.POST.get("allowed_ips") or "").strip(),
     }
 
 
@@ -132,6 +135,14 @@ def _apply_role_flags(obj, data):
     obj.is_staff = data["role"] == User.ROLE_ADMIN
     obj.is_superuser = data["role"] == User.ROLE_ADMIN
     obj.rate_limit_per_min = data["rate_limit_per_min"]
+    obj.allowed_ips = data["allowed_ips"]
+    # Only clients are owned by a partner; everyone else is top-level.
+    partner = None
+    if data["role"] == User.ROLE_CLIENT and data["partner_id"]:
+        partner = User.objects.filter(
+            pk=data["partner_id"], role=User.ROLE_PARTNER
+        ).first()
+    obj.partner = partner
 
 
 @manage_users_required
@@ -156,7 +167,8 @@ def team_add(request):
     return render(
         request,
         "redeem/team_form.html",
-        {"error": error, "obj": None, "role_defaults": _ROLE_DEFAULT_CAPS},
+        {"error": error, "obj": None, "role_defaults": _ROLE_DEFAULT_CAPS,
+         "partners": User.objects.filter(role=User.ROLE_PARTNER)},
     )
 
 
@@ -188,14 +200,23 @@ def team_edit(request, pk):
                 return redirect("team_edit", pk=obj.pk)
 
     summary = Subscription.summary_for(obj)
-    plan_rows = [(Subscription.PLAN_PANEL, summary[Subscription.PLAN_PANEL]),
-                 (Subscription.PLAN_API, summary[Subscription.PLAN_API])]
+    pkgs_by_plan = {}
+    for pkg in Package.objects.filter(is_active=True):
+        pkgs_by_plan.setdefault(pkg.plan, []).append(pkg)
+    # Each row: (plan, current subscription | None, packages offered for that plan)
+    plan_rows = [
+        (Subscription.PLAN_PANEL, summary[Subscription.PLAN_PANEL],
+         pkgs_by_plan.get(Subscription.PLAN_PANEL, [])),
+        (Subscription.PLAN_API, summary[Subscription.PLAN_API],
+         pkgs_by_plan.get(Subscription.PLAN_API, [])),
+    ]
     return render(
         request,
         "redeem/team_form.html",
         {"error": error, "obj": obj, "keys": obj.api_keys.all(),
          "secret_once": secret_once, "role_defaults": _ROLE_DEFAULT_CAPS,
-         "plan_rows": plan_rows},
+         "plan_rows": plan_rows,
+         "partners": User.objects.filter(role=User.ROLE_PARTNER).exclude(pk=obj.pk)},
     )
 
 
@@ -239,13 +260,31 @@ def team_apikey_revoke(request, pk, key_id):
 @require_POST
 @manage_users_required
 def team_subscription_set(request, pk, plan):
-    """Grant or renew a Panel/API subscription for a user (admin only)."""
+    """Grant or renew a Panel/API subscription for a user (admin only).
+
+    Either by picking a catalog Package, or with a custom limit (blank/unlimited
+    checkbox = unlimited, which is never rejected but still metered)."""
     obj = get_object_or_404(User, pk=pk)
     if plan not in dict(Subscription.PLAN_CHOICES):
         messages.error(request, "Unknown plan.")
         return redirect("team_edit", pk=pk)
+
+    package_id = (request.POST.get("package_id") or "").strip()
+    if package_id:
+        pkg = get_object_or_404(Package, pk=package_id, plan=plan)
+        Subscription.grant_package(obj, pkg)
+        cap = "unlimited" if pkg.is_unlimited else f"{pkg.request_limit} requests"
+        messages.success(request, f"{plan.title()} plan “{pkg.name}” granted ({cap} / "
+                                  f"{pkg.period_days} days).")
+        return redirect("team_edit", pk=pk)
+
+    if request.POST.get("unlimited"):
+        Subscription.grant(obj, plan, request_limit=None)
+        messages.success(request, f"{plan.title()} plan granted (unlimited / 30 days).")
+        return redirect("team_edit", pk=pk)
+
     try:
-        limit = int(request.POST.get("request_limit") or Subscription._meta.get_field("request_limit").default)
+        limit = int(request.POST.get("request_limit") or 5000)
     except (TypeError, ValueError):
         limit = 5000
     limit = max(1, limit)
@@ -290,3 +329,97 @@ def my_apikey_revoke(request, key_id):
     ApiKey.objects.filter(user=request.user, key_id=key_id).update(is_active=False)
     messages.success(request, "Key revoked.")
     return redirect("my_api_keys")
+
+
+# ── Subscription packages (admin only) ─────────────────────────────────────────
+def _parse_package_form(request):
+    """Read the package create/edit form. Blank limit OR the unlimited checkbox =>
+    unlimited (NULL). Price is entered in dollars and stored as cents."""
+    name = (request.POST.get("name") or "").strip()
+    plan = request.POST.get("plan")
+    if plan not in dict(Subscription.PLAN_CHOICES):
+        plan = Subscription.PLAN_API
+    raw_limit = (request.POST.get("request_limit") or "").strip()
+    if request.POST.get("unlimited") or raw_limit == "":
+        limit = None
+    else:
+        try:
+            limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            limit = 5000
+    try:
+        price_cents = max(0, round(float(request.POST.get("price") or 30) * 100))
+    except (TypeError, ValueError):
+        price_cents = 3000
+    try:
+        period = max(1, int(request.POST.get("period_days") or 30))
+    except (TypeError, ValueError):
+        period = 30
+    return {"name": name, "plan": plan, "request_limit": limit,
+            "price_cents": price_cents, "period_days": period}
+
+
+@manage_users_required
+def package_list(request):
+    return render(
+        request,
+        "redeem/packages.html",
+        {"packages": Package.objects.all(), "plan_choices": Subscription.PLAN_CHOICES},
+    )
+
+
+@require_POST
+@manage_users_required
+def package_create(request):
+    data = _parse_package_form(request)
+    if not data["name"]:
+        messages.error(request, "Package name is required.")
+    else:
+        Package.objects.create(**data)
+        messages.success(request, f"Package “{data['name']}” created.")
+    return redirect("package_list")
+
+
+@require_POST
+@manage_users_required
+def package_edit(request, pk):
+    pkg = get_object_or_404(Package, pk=pk)
+    data = _parse_package_form(request)
+    if not data["name"]:
+        messages.error(request, "Package name is required.")
+        return redirect("package_list")
+    for field, value in data.items():
+        setattr(pkg, field, value)
+    pkg.is_active = bool(request.POST.get("is_active"))
+    pkg.save()
+    messages.success(request, f"Package “{pkg.name}” saved.")
+    return redirect("package_list")
+
+
+@require_POST
+@manage_users_required
+def package_delete(request, pk):
+    pkg = get_object_or_404(Package, pk=pk)
+    name = pkg.name
+    # Existing subscriptions keep working — their package FK just goes NULL.
+    pkg.delete()
+    messages.success(request, f"Package “{name}” deleted.")
+    return redirect("package_list")
+
+
+# ── Usage overview (admin only) ────────────────────────────────────────────────
+@manage_users_required
+def usage_overview(request):
+    """At-a-glance panel + API meters for every client and partner."""
+    users = (User.objects
+             .filter(role__in=[User.ROLE_CLIENT, User.ROLE_PARTNER])
+             .order_by("role", "name"))
+    rows = []
+    for u in users:
+        summary = Subscription.summary_for(u)
+        rows.append({
+            "user": u,
+            "panel": summary[Subscription.PLAN_PANEL],
+            "api": summary[Subscription.PLAN_API],
+        })
+    return render(request, "redeem/usage.html", {"rows": rows})
