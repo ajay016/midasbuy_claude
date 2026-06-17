@@ -99,10 +99,18 @@ async def _select_session(metered: bool) -> tuple[int, str, str]:
     return acct.id, ssp, cookies
 
 
-async def _report(account_id: int | None, success: bool) -> None:
+def _result_ok(result) -> bool:
+    """Extract `success` from a service result that may be a Pydantic model
+    (player lookup / redeem) or a plain dict (code-status / all-in-one redeem)."""
+    if isinstance(result, dict):
+        return bool(result.get("success"))
+    return bool(getattr(result, "success", False))
+
+
+async def _report(account_id: int | None, result) -> None:
     from accounts.services.rotation import report_result
 
-    await sync_to_async(report_result)(account_id, bool(success))
+    await sync_to_async(report_result)(account_id, _result_ok(result))
 
 
 @api_app.get("/player-info", response_model=PlayerLookupResponse)
@@ -114,7 +122,7 @@ async def player_info(
     await charge(identity, 1)  # player lookup: per request
     account_id, ssp, cookies = await _select_session(metered=False)
     result = await get_player_info(player_id, country_code, ssp, cookies)
-    await _report(account_id, result.success)
+    await _report(account_id, result)
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
     return result
@@ -126,7 +134,7 @@ async def code_status(body: CodeActionRequest, identity: dict = Depends(require_
     await charge(identity, 1)
     account_id, ssp, cookies = await _select_session(metered=True)
     result = await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
-    await _report(account_id, result.success)
+    await _report(account_id, result)
     return result
 
 
@@ -136,7 +144,7 @@ async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_o
     await charge(identity, 1)  # one redeem item
     account_id, ssp, cookies = await _select_session(metered=True)
     result = await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
-    await _report(account_id, result.success)
+    await _report(account_id, result)
     return result
 
 
@@ -174,5 +182,5 @@ async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
     result.account_id = account_id
     # Only judge account health on terminal outcomes (not mid-flow prompts).
     if not (result.verification_required or result.confirmation_required):
-        await _report(account_id, result.success)
+        await _report(account_id, result)
     return result
