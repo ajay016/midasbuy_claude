@@ -61,10 +61,12 @@ def index(request):
         if user.allowed_to_order
         else MidasbuyAccount.objects.none()
     )
-    # Clients see their own quota usage; admins/staff are unlimited.
+    # Everyone can see their own usage. Clients/partners always get the panel; any
+    # user that has picked up a subscription (e.g. an admin metered on first API use)
+    # sees it too. Admins/staff with nothing yet simply have no meter to show.
+    summary = Subscription.summary_for(user)
     subs = None
-    if user.role == User.ROLE_CLIENT:
-        summary = Subscription.summary_for(user)
+    if user.role in (User.ROLE_CLIENT, User.ROLE_PARTNER) or any(summary.values()):
         subs = [(Subscription.PLAN_PANEL, summary[Subscription.PLAN_PANEL]),
                 (Subscription.PLAN_API, summary[Subscription.PLAN_API])]
     return render(

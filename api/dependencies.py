@@ -168,18 +168,25 @@ def plan_for(identity: dict) -> str:
 
 # ── Quota metering ─────────────────────────────────────────────────────────────
 def _charge_sync(user_id: int, role: str, plan: str, n: int) -> str | None:
-    """Charge ``n`` units against the client's plan. Returns an error string to
-    raise as 402, or None on success. Admins/staff are internal -> never metered."""
+    """Charge ``n`` units against the caller's plan. Returns an error string to
+    raise as 402, or None on success.
+
+    Every authenticated request is counted. Clients must be explicitly provisioned
+    (no subscription -> 402). Internal/partner accounts (admin/staff/partner) are
+    auto-given an UNLIMITED meter on first use, so their usage is still counted but
+    never rejected."""
     from apiauth.models import User
-
-    if role != User.ROLE_CLIENT:
-        return None  # unlimited for admins and staff
-
     from billing.models import Subscription
 
     sub = Subscription.current_for(user_id, plan)
     if sub is None:
-        return f"No active {plan} subscription. Ask an admin to enable it."
+        if role == User.ROLE_CLIENT:
+            return f"No active {plan} subscription. Ask an admin to enable it."
+        user = User.objects.filter(pk=user_id).first()
+        if user is None:
+            return None
+        # request_limit=None -> unlimited: consume() always succeeds but still counts.
+        sub = Subscription.grant(user, plan, request_limit=None)
     if not sub.consume(n):
         return (f"Your {plan} quota ({sub.request_limit} requests / 30 days) can't cover "
                 f"this ({n} request{'s' if n != 1 else ''}). It resets on "
