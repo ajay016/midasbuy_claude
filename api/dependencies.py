@@ -145,8 +145,11 @@ async def require_auth(request: Request) -> dict:
     info["billing_user_id"] = info["user_id"]
     info["billing_role"] = info.get("role")
     info["billing_rate_limit_per_min"] = info.get("rate_limit_per_min", 20)
+    # Only partners/admins can attribute via X-Client-Id. For anyone else the header
+    # is simply ignored (billed to the caller) so a stray header never blocks a
+    # normal client; a partner/admin naming a client they don't own still gets 403.
     client_ref = headers.get("x-client-id")
-    if client_ref:
+    if client_ref and (info.get("is_partner") or info.get("is_admin")):
         target = await sync_to_async(_resolve_billing_target)(
             info["user_id"], info.get("is_admin"), info.get("is_partner"), client_ref
         )
@@ -254,7 +257,8 @@ def _charge_sync(user_id: int, role: str, plan: str, n: int) -> str | None:
         if user is None:
             return None
         # request_limit=None -> unlimited: consume() always succeeds but still counts.
-        sub = Subscription.grant(user, plan, request_limit=None)
+        # price 0 — these internal meters are never billed.
+        sub = Subscription.grant(user, plan, request_limit=None, price_cents=0)
     if not sub.consume(n):
         return (f"Your {plan} quota ({sub.request_limit} requests / 30 days) can't cover "
                 f"this ({n} request{'s' if n != 1 else ''}). It resets on "
