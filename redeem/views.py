@@ -43,9 +43,31 @@ def logout_view(request):
 
 @panel_login_required
 def docs_view(request):
+    from django.urls import reverse
+
     from .api_docs import build_context
 
     ctx = build_context()
+    if request.user.is_partner or request.user.is_admin:
+        ctx["switch_url"] = reverse("partner_api_docs")
+        ctx["switch_label"] = "Partner API docs"
+    return render(request, "redeem/docs.html", ctx)
+
+
+@panel_login_required
+def partner_docs_view(request):
+    """Partner-flavoured API reference (X-Client-Id attribution + /api/partner/*)."""
+    from django.urls import reverse
+
+    if not (request.user.is_partner or request.user.is_admin):
+        messages.error(request, "The partner API reference is for partner accounts.")
+        return redirect("api_docs")
+
+    from .partner_api_docs import build_partner_context
+
+    ctx = build_partner_context()
+    ctx["switch_url"] = reverse("api_docs")
+    ctx["switch_label"] = "Client API docs"
     return render(request, "redeem/docs.html", ctx)
 
 

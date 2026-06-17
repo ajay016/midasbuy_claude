@@ -303,7 +303,10 @@ GROUPS = [
                  "helper below into your code, and every endpoint sample calls it. (Browser "
                  "dashboards may instead use a short-lived Bearer token from Login.) "
                  "Each data request counts against your API plan's quota; when it's exhausted "
-                 "the API replies 402 until the 30-day window resets.",
+                 "the API replies 402 until the 30-day window resets. If an admin has set an IP "
+                 "allow-list on your account, signed requests are only accepted from those IPs. "
+                 "Error codes: 401 (missing/invalid auth), 402 (quota exhausted), 403 (IP not "
+                 "allowed or capability missing), 429 (per-minute rate limit exceeded).",
         "endpoints": [
             {
                 "id": "login", "method": "POST", "path": "/api/auth/login", "auth": False,

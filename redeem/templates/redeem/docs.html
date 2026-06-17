@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>API Reference · Midasbuy</title>
+    <title>{{ doc_title|default:"API Reference · Midasbuy" }}</title>
     <link rel="stylesheet" href="{% static 'panel/theme.css' %}" />
 </head>
 <body class="docs-body">
@@ -17,9 +17,12 @@
             <span class="name">MIDAS<b>BUY</b></span>
         </div>
         <a href="/" class="nav-link back">← Back to panel</a>
+        {% if switch_url %}
+        <a href="{{ switch_url }}" class="nav-link back">⇄ {{ switch_label }}</a>
+        {% endif %}
         <div class="nav-group">
             <div class="nav-title">Start here</div>
-            <a class="nav-link" href="#client-setup">Client setup (signing)</a>
+            <a class="nav-link" href="#client-setup">{{ setup_nav_label|default:"Client setup (signing)" }}</a>
         </div>
         {% for g in groups %}
         <div class="nav-group">
@@ -36,7 +39,10 @@
     <!-- ── Main ────────────────────────────────────────────────────────────── -->
     <main class="docs-main">
         <div class="docs-intro">
-            <h1>API Reference</h1>
+            <h1>{{ intro_heading|default:"API Reference" }}</h1>
+            {% if intro_html %}
+            <p>{{ intro_html|safe }}</p>
+            {% else %}
             <p>
                 Base URL <code>{{ host }}/api</code>. Every data endpoint is authenticated by
                 <b>signing the request with your API key</b> (HMAC-SHA256) — the secret never
@@ -45,6 +51,7 @@
                 and the per-endpoint samples call it directly. Bulk calls return a job
                 immediately — poll it or set a <code>webhook_url</code>.
             </p>
+            {% endif %}
             <div class="pill-links">
                 <a class="btn btn-outline" href="/api/docs" target="_blank">Swagger UI ↗</a>
                 <a class="btn btn-ghost" href="/api/redoc" target="_blank">ReDoc ↗</a>
@@ -54,13 +61,17 @@
 
         <!-- ── Client setup: the signing helper (copy once) ────────────────────── -->
         <section class="group-head">
-            <h2 id="client-setup">Client setup — request signing</h2>
+            <h2 id="client-setup">{{ setup_heading|default:"Client setup — request signing" }}</h2>
+            {% if setup_blurb %}
+            <p>{{ setup_blurb|safe }}</p>
+            {% else %}
             <p>
                 Copy this helper once. It builds the canonical string
                 (<code>METHOD\nPATH\nQUERY\nSHA256(body)\nTIMESTAMP\nNONCE</code>), signs it with
                 your secret, and sends the four <code>X-*</code> headers. Sign the <b>exact bytes</b>
                 you send — every sample below does. Keep <code>SECRET</code> on the server only.
             </p>
+            {% endif %}
         </section>
         <article class="endpoint" style="grid-template-columns:1fr;">
             <div class="code-card">
