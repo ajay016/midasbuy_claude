@@ -84,7 +84,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     # arrives with the SAME (partner's) source IP, the partner passes this value
     # (header X-Client-Id) so we can attribute the request to the right client.
     client_ref = models.CharField(
-        max_length=40, unique=True, blank=True, db_index=True,
+        max_length=40, unique=True, blank=True,
         help_text="Identifier the partner sends (X-Client-Id) to select this client.",
     )
     # Optional IP allow-list (comma/newline separated IPs or CIDR ranges). When set,

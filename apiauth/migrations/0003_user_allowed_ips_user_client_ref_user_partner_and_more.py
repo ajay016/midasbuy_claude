@@ -39,14 +39,16 @@ class Migration(migrations.Migration):
                 help_text="Optional allow-list of IPs/CIDRs (comma or newline separated). Empty = allow any source IP.",
             ),
         ),
-        # Step 1: add the column WITHOUT the unique constraint so existing rows can
-        # share the empty default momentarily.
+        # Step 1: add the column WITHOUT any index/unique constraint so existing rows
+        # can share the empty default momentarily. (No db_index here: on Postgres a
+        # unique varchar already creates the companion `_like` index, so adding it now
+        # would make the later "make unique" step try to create that same `_like` index
+        # a second time -> DuplicateTable.)
         migrations.AddField(
             model_name="user",
             name="client_ref",
             field=models.CharField(
                 blank=True,
-                db_index=True,
                 default="",
                 help_text="Identifier the partner sends (X-Client-Id) to select this client.",
                 max_length=40,
@@ -81,13 +83,13 @@ class Migration(migrations.Migration):
         ),
         # Step 2: backfill unique refs for existing rows.
         migrations.RunPython(populate_client_refs, migrations.RunPython.noop),
-        # Step 3: now it's safe to enforce uniqueness.
+        # Step 3: now it's safe to enforce uniqueness. unique=True alone gives us the
+        # index (plus the Postgres `_like` index) exactly once.
         migrations.AlterField(
             model_name="user",
             name="client_ref",
             field=models.CharField(
                 blank=True,
-                db_index=True,
                 help_text="Identifier the partner sends (X-Client-Id) to select this client.",
                 max_length=40,
                 unique=True,
