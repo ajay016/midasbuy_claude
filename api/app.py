@@ -31,6 +31,10 @@ api_app.include_router(bulk_router)
 
 @api_app.on_event("shutdown")
 async def shutdown_browser_cache():
+    global _prewarm_task
+    if _prewarm_task is not None:
+        _prewarm_task.cancel()
+        _prewarm_task = None
     from .service import shutdown_browser_worker
     await shutdown_browser_worker()
 
@@ -111,6 +115,81 @@ async def _report(account_id: int | None, result) -> None:
     from accounts.services.rotation import report_result
 
     await sync_to_async(report_result)(account_id, _result_ok(result))
+
+
+# ── Browser warm-up ────────────────────────────────────────────────────────────
+# Each logged-in account has its own cached browser session (per country). The
+# first call for an account is a slow cold start (launch Chromium, load the SDK);
+# after that it's reused. We pre-warm every account on startup — and refresh
+# periodically — so rotation between accounts stays fast, not just the first call.
+def _logged_in_account_sessions() -> list[tuple[int, str]]:
+    """(account_id, storage_state_path) for every logged-in account with a session."""
+    from accounts.models import MidasbuyAccount
+
+    out = []
+    for acct in MidasbuyAccount.objects.filter(status=1):
+        ssp, _ = _resolve_session_sync(acct.id)
+        if ssp:
+            out.append((acct.id, ssp))
+    return out
+
+
+async def _warm_all_sessions() -> None:
+    from django.conf import settings
+
+    from .service import warm_account_session
+
+    countries = [c.strip().lower()
+                 for c in getattr(settings, "MIDASBUY_WARM_COUNTRIES", ["bd"]) if c.strip()]
+    sessions = await sync_to_async(_logged_in_account_sessions)()
+    if not sessions:
+        logger.info("[WARMUP] no logged-in accounts to warm yet")
+        return
+    logger.info("[WARMUP] warming %d account(s) x %d country(ies)",
+                len(sessions), len(countries))
+    # Sequential awaits keep the single browser thread interleaved with live traffic
+    # (a real request waits at most one warm-up, not the whole sweep).
+    for account_id, ssp in sessions:
+        for country in countries:
+            ok = await warm_account_session(ssp, country)
+            logger.info("[WARMUP] account=%s country=%s warm=%s", account_id, country, ok)
+
+
+async def _prewarm_loop() -> None:
+    import asyncio
+
+    from django.conf import settings
+
+    try:
+        await _warm_all_sessions()
+    except Exception:
+        logger.exception("[WARMUP] initial warm-up failed")
+
+    interval = int(getattr(settings, "MIDASBUY_WARM_INTERVAL", 0) or 0)
+    while interval > 0:
+        try:
+            await asyncio.sleep(interval)
+            await _warm_all_sessions()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("[WARMUP] periodic warm-up sweep failed")
+
+
+_prewarm_task = None
+
+
+@api_app.on_event("startup")
+async def _start_prewarm():
+    import asyncio
+
+    from django.conf import settings
+
+    if not getattr(settings, "MIDASBUY_WARM_ON_STARTUP", True):
+        return
+    global _prewarm_task
+    _prewarm_task = asyncio.create_task(_prewarm_loop())
+    logger.info("[WARMUP] background pre-warm scheduled")
 
 
 @api_app.get("/player-info", response_model=PlayerLookupResponse)

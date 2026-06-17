@@ -47,6 +47,14 @@ async def _run_browser_call(func, *args):
     return await loop.run_in_executor(_BROWSER_EXECUTOR, _run_browser_call_sync, func, args)
 
 
+async def warm_account_session(storage_state_path: str, country_code: str = "bd") -> bool:
+    """Pre-warm one account's cached browser session on the dedicated browser thread,
+    so the first real request for that (account, country) isn't a cold start."""
+    from accounts.services.playwright_crypto import warm_cached_session
+
+    return await _run_browser_call(warm_cached_session, storage_state_path, country_code)
+
+
 async def shutdown_browser_worker() -> None:
     from accounts.services.playwright_crypto import close_cached_browser_sessions
 

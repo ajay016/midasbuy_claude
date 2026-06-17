@@ -1524,6 +1524,25 @@ def _get_or_create_cached_session(
         return session
 
 
+def warm_cached_session(
+    storage_state_path: str,
+    country_code: str = "bd",
+    timeout_ms: int = 60_000,
+) -> bool:
+    """Pre-build (or refresh) the cached browser session for one (account, country)
+    so the first real API call isn't a cold start. Reuses an already-warm session,
+    so it's cheap to call repeatedly. Returns True on success, False on failure
+    (never raises — warm-up must not take the API down)."""
+    try:
+        _get_or_create_cached_session(storage_state_path, country_code, timeout_ms)
+        return True
+    except Exception:
+        logger.exception(
+            "[CRYPTO] warm-up failed ssp=%s country=%s", storage_state_path, country_code
+        )
+        return False
+
+
 def _wait_for_xmidas(page, session_dir: str, timeout_ms: int) -> bool:
     from playwright.sync_api import TimeoutError as PWTimeout
     try:

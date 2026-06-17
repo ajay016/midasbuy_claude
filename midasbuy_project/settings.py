@@ -179,3 +179,14 @@ MIDASBUY_LOGIN_BASE_URL = "https://www.midasbuy.com/midasbuy"
 MIDASBUY_ACCOUNT_CAP_PER_MIN = env.int("MIDASBUY_ACCOUNT_CAP_PER_MIN", default=20)
 MIDASBUY_ACCOUNT_FLAG_THRESHOLD = env.int("MIDASBUY_ACCOUNT_FLAG_THRESHOLD", default=5)
 MIDASBUY_ACCOUNT_FLAG_COOLDOWN = env.int("MIDASBUY_ACCOUNT_FLAG_COOLDOWN", default=600)
+
+# Browser warm-up: on API startup, pre-build a cached browser session for every
+# logged-in account (per country below) so the first real request to each account
+# isn't a slow cold start. A periodic keep-warm refreshes them so rotation stays
+# fast. Set MIDASBUY_WARM_ON_STARTUP=False to disable. Each warm account = one
+# headless Chromium per worker, so keep gunicorn workers low (1-2) when warming.
+MIDASBUY_WARM_ON_STARTUP = env.bool("MIDASBUY_WARM_ON_STARTUP", default=True)
+MIDASBUY_WARM_COUNTRIES = env.list("MIDASBUY_WARM_COUNTRIES", default=["bd"])
+# Seconds between keep-warm sweeps (0 disables the periodic refresh; startup warm
+# still runs). Already-warm sessions are reused cheaply; only expired ones rebuild.
+MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=600)
