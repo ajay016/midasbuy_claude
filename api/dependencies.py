@@ -197,6 +197,13 @@ require_api_access = require_capability(
 )
 
 
+async def require_partner(identity: dict = Depends(require_auth)) -> dict:
+    """Caller must be a partner (or an admin) to manage clients/subscriptions."""
+    if not (identity.get("is_partner") or identity.get("is_admin")):
+        raise HTTPException(status_code=403, detail="Partner access required.")
+    return identity
+
+
 # ── Rate limiting (per user, per minute) ───────────────────────────────────────
 def _rate_ok(user_id: int, limit: int) -> bool:
     """Fixed-window per-minute limiter in Redis. 0 = unlimited.

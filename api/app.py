@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 
 from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
+from .partner_routes import router as partner_router
 from .dependencies import charge, require_order
 from .schemas import (
     CodeActionRequest,
@@ -27,6 +28,8 @@ api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
 api_app.include_router(auth_router)
 # Bulk operations under /api/bulk/* — every route requires auth (set on the router).
 api_app.include_router(bulk_router)
+# Partner self-service under /api/partner/* — every route requires a partner/admin.
+api_app.include_router(partner_router)
 
 
 @api_app.on_event("shutdown")
