@@ -138,7 +138,43 @@ async def require_auth(request: Request) -> dict:
                 status_code=403,
                 detail="This API key is not allowed from your IP address.",
             )
+
+    # Per-client attribution. By default a request is metered against the caller.
+    # A partner (or admin) can pass X-Client-Id to attribute it to one of their
+    # clients instead — usage and rate limits then count against that client.
+    info["billing_user_id"] = info["user_id"]
+    info["billing_role"] = info.get("role")
+    info["billing_rate_limit_per_min"] = info.get("rate_limit_per_min", 20)
+    client_ref = headers.get("x-client-id")
+    if client_ref:
+        target = await sync_to_async(_resolve_billing_target)(
+            info["user_id"], info.get("is_admin"), info.get("is_partner"), client_ref
+        )
+        if target is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Unknown X-Client-Id, or you don't own that client.",
+            )
+        (info["billing_user_id"], info["billing_role"],
+         info["billing_rate_limit_per_min"], info["billing_client_ref"]) = target
     return info
+
+
+def _resolve_billing_target(caller_user_id: int, caller_is_admin: bool,
+                            caller_is_partner: bool, client_ref: str):
+    """Resolve an X-Client-Id to the account a request should be metered against.
+
+    Returns (user_id, role, rate_limit_per_min, client_ref) or None if the ref is
+    unknown or the caller isn't allowed to bill it. Admins may attribute to any
+    client; a partner only to clients they own."""
+    from apiauth.models import User
+
+    sub = User.objects.filter(client_ref=client_ref, is_active=True).first()
+    if sub is None:
+        return None
+    if caller_is_admin or (caller_is_partner and sub.partner_id == caller_user_id):
+        return sub.id, sub.role, sub.rate_limit_per_min, sub.client_ref
+    return None
 
 
 def require_capability(flag: str, detail: str):
@@ -229,7 +265,9 @@ async def require_order(identity: dict = Depends(require_auth)) -> dict:
                             detail="Your account isn't permitted to place orders.")
     if not identity.get("is_admin"):  # admins are never rate limited
         ok = await sync_to_async(_rate_ok)(
-            identity["user_id"], identity.get("rate_limit_per_min", 20)
+            identity.get("billing_user_id", identity["user_id"]),
+            identity.get("billing_rate_limit_per_min",
+                         identity.get("rate_limit_per_min", 20)),
         )
         if not ok:
             raise HTTPException(status_code=429,
@@ -247,7 +285,9 @@ async def charge(identity: dict, n: int = 1) -> None:
       * bulk redeem / bulk code-status  -> one per item (matches upstream calls)
     """
     err = await sync_to_async(_charge_sync)(
-        identity["user_id"], identity.get("role"), plan_for(identity), n
+        identity.get("billing_user_id", identity["user_id"]),
+        identity.get("billing_role", identity.get("role")),
+        plan_for(identity), n,
     )
     if err:
         raise HTTPException(status_code=402, detail=err)
