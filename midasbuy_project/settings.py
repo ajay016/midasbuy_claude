@@ -185,6 +185,11 @@ MIDASBUY_ACCOUNT_FLAG_COOLDOWN = env.int("MIDASBUY_ACCOUNT_FLAG_COOLDOWN", defau
 # isn't a slow cold start. A periodic keep-warm refreshes them so rotation stays
 # fast. Set MIDASBUY_WARM_ON_STARTUP=False to disable. Each warm account = one
 # headless Chromium per worker, so keep gunicorn workers low (1-2) when warming.
+# Trust the left-most X-Forwarded-For entry as the client IP for API IP allow-lists.
+# Keep True when behind nginx/a load balancer (the usual deploy); set False only if
+# the app is exposed directly to clients with no proxy.
+MIDASBUY_TRUST_FORWARDED_FOR = env.bool("MIDASBUY_TRUST_FORWARDED_FOR", default=True)
+
 MIDASBUY_WARM_ON_STARTUP = env.bool("MIDASBUY_WARM_ON_STARTUP", default=True)
 MIDASBUY_WARM_COUNTRIES = env.list("MIDASBUY_WARM_COUNTRIES", default=["bd"])
 # Seconds between keep-warm sweeps (0 disables the periodic refresh; startup warm

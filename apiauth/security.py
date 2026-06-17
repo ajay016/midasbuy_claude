@@ -22,6 +22,7 @@ was already used (replay).
 import base64
 import hashlib
 import hmac
+import ipaddress
 import time
 from functools import lru_cache
 from typing import Optional
@@ -124,6 +125,32 @@ def webhook_signature(body: bytes) -> str:
     Receiver verifies: hex(HMAC_SHA256(WEBHOOK_SECRET, raw_body)) == X-Webhook-Signature."""
     secret = getattr(settings, "WEBHOOK_SECRET", None) or _jwt_secret()
     return hmac.new(secret.encode("utf-8"), body or b"", hashlib.sha256).hexdigest()
+
+
+# ── IP allow-list ──────────────────────────────────────────────────────────────
+def ip_in_allowlist(allowed_ips: str, ip: str) -> bool:
+    """True if ``ip`` matches the comma/newline-separated allow-list of IPs/CIDRs.
+    An empty allow-list means *no restriction* (any IP allowed)."""
+    entries = [e.strip() for e in (allowed_ips or "").replace("\n", ",").split(",")]
+    entries = [e for e in entries if e]
+    if not entries:
+        return True
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for entry in entries:
+        try:
+            if "/" in entry:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif addr == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def timestamp_fresh(timestamp: str, now: Optional[int] = None) -> bool:

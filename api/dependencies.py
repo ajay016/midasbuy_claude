@@ -99,6 +99,21 @@ def _authenticate(method: str, path: str, query: str, body: bytes, headers: dict
     return None
 
 
+# ── Source IP (behind a proxy) ─────────────────────────────────────────────────
+def _client_ip(request: Request) -> str:
+    """Best-effort real client IP. Behind nginx the socket peer is the proxy, so we
+    read the left-most X-Forwarded-For entry (the original client) when configured to
+    trust it. X-Forwarded-For is client-spoofable, so IP allow-listing is only ever a
+    SECONDARY control layered on top of the HMAC signature, never the sole gate."""
+    from django.conf import settings
+
+    if getattr(settings, "MIDASBUY_TRUST_FORWARDED_FOR", True):
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
 # ── FastAPI dependency ─────────────────────────────────────────────────────────
 async def require_auth(request: Request) -> dict:
     # Read the raw body once; FastAPI caches it so route body-parsing still works.
@@ -113,6 +128,16 @@ async def require_auth(request: Request) -> dict:
             detail="Authentication required (valid JWT or signed API request).",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # IP allow-list: only for signed (server-to-server) requests, and only when the
+    # key owner has configured one. Browser/JWT sessions roam, so they're exempt.
+    if info.get("auth") == "hmac" and info.get("allowed_ips"):
+        from apiauth.security import ip_in_allowlist
+
+        if not ip_in_allowlist(info["allowed_ips"], _client_ip(request)):
+            raise HTTPException(
+                status_code=403,
+                detail="This API key is not allowed from your IP address.",
+            )
     return info
 
 

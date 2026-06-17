@@ -14,7 +14,6 @@ fold in "admin (or Django superuser) implies everything".
 Passwords are hashed (AbstractBaseUser). API secrets must be recoverable to verify
 HMAC signatures, so they're stored ENCRYPTED (Fernet, key outside the DB), not hashed.
 """
-import ipaddress
 import secrets
 
 from django.contrib.auth.models import (
@@ -158,26 +157,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     # ── IP allow-list ──────────────────────────────────────────────────────────
     def ip_allowed(self, ip: str) -> bool:
         """True if ``ip`` is permitted. No allow-list configured -> any IP allowed."""
-        entries = [e.strip() for e in self.allowed_ips.replace("\n", ",").split(",")]
-        entries = [e for e in entries if e]
-        if not entries:
-            return True
-        if not ip:
-            return False
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return False
-        for entry in entries:
-            try:
-                if "/" in entry:
-                    if addr in ipaddress.ip_network(entry, strict=False):
-                        return True
-                elif addr == ipaddress.ip_address(entry):
-                    return True
-            except ValueError:
-                continue
-        return False
+        from .security import ip_in_allowlist
+
+        return ip_in_allowlist(self.allowed_ips, ip)
 
     @property
     def role_label(self) -> str:
