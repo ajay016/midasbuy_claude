@@ -21,16 +21,27 @@ logger = logging.getLogger("api")
 
 
 # ── Sync verification (Django ORM + Redis + crypto) ────────────────────────────
+_redis_client = None
+
+
+def _redis():
+    """One shared Redis client (connection pool) for the process. Building a new
+    client per request — as the old code did — meant a fresh connection/handshake
+    on every signed call; reusing the pool removes that per-request overhead."""
+    global _redis_client
+    if _redis_client is None:
+        import redis
+        from django.conf import settings
+
+        _redis_client = redis.from_url(settings.CELERY_BROKER_URL)
+    return _redis_client
+
+
 def _nonce_unused(key_id: str, nonce: str, window: int) -> bool:
     """True the first time a (key, nonce) pair is seen; False on replay."""
-    from django.conf import settings
-
     try:
-        import redis
-
-        client = redis.from_url(settings.CELERY_BROKER_URL)
         # SET NX returns True only if the key did not exist -> first use.
-        return bool(client.set(f"apiauth:nonce:{key_id}:{nonce}", "1", nx=True, ex=window))
+        return bool(_redis().set(f"apiauth:nonce:{key_id}:{nonce}", "1", nx=True, ex=window))
     except Exception:
         # If Redis is unreachable, fail CLOSED (reject) — never weaken auth.
         logger.exception("[AUTH] nonce store unavailable; rejecting request")
@@ -139,27 +150,35 @@ async def require_auth(request: Request) -> dict:
                 detail="This API key is not allowed from your IP address.",
             )
 
-    # Per-client attribution. By default a request is metered against the caller.
-    # A partner (or admin) can pass X-Client-Id to attribute it to one of their
-    # clients instead — usage and rate limits then count against that client.
+    # Per-client attribution. Every request is metered against a billing target.
     info["billing_user_id"] = info["user_id"]
     info["billing_role"] = info.get("role")
     info["billing_rate_limit_per_min"] = info.get("rate_limit_per_min", 20)
-    # Only partners/admins can attribute via X-Client-Id. For anyone else the header
-    # is simply ignored (billed to the caller) so a stray header never blocks a
-    # normal client; a partner/admin naming a client they don't own still gets 403.
+
     client_ref = headers.get("x-client-id")
-    if client_ref and (info.get("is_partner") or info.get("is_admin")):
+    if info.get("auth") == "hmac":
+        # Signed API calls MUST name the client they're for via X-Client-Id — the
+        # caller's OWN client_ref when acting for themselves, or one of a partner's
+        # (or any, for admins). This makes attribution explicit and auditable on
+        # every request instead of silently defaulting to the caller.
+        if not client_ref:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required X-Client-Id header. Send the client_ref the "
+                       "request is for (your own client_ref to bill yourself).",
+            )
         target = await sync_to_async(_resolve_billing_target)(
             info["user_id"], info.get("is_admin"), info.get("is_partner"), client_ref
         )
         if target is None:
             raise HTTPException(
                 status_code=403,
-                detail="Unknown X-Client-Id, or you don't own that client.",
+                detail="Unknown X-Client-Id, or you're not allowed to bill that client.",
             )
         (info["billing_user_id"], info["billing_role"],
          info["billing_rate_limit_per_min"], info["billing_client_ref"]) = target
+    # Browser/JWT (panel) sessions are always billed to the signed-in user; any
+    # X-Client-Id header on those is ignored.
     return info
 
 
@@ -168,14 +187,19 @@ def _resolve_billing_target(caller_user_id: int, caller_is_admin: bool,
     """Resolve an X-Client-Id to the account a request should be metered against.
 
     Returns (user_id, role, rate_limit_per_min, client_ref) or None if the ref is
-    unknown or the caller isn't allowed to bill it. Admins may attribute to any
-    client; a partner only to clients they own."""
+    unknown or the caller isn't allowed to bill it. A caller may always bill
+    THEMSELVES; admins may bill any client; a partner only clients they own."""
     from apiauth.models import User
 
     sub = User.objects.filter(client_ref=client_ref, is_active=True).first()
     if sub is None:
         return None
-    if caller_is_admin or (caller_is_partner and sub.partner_id == caller_user_id):
+    allowed = (
+        sub.id == caller_user_id                                   # acting for yourself
+        or caller_is_admin                                         # admin -> anyone
+        or (caller_is_partner and sub.partner_id == caller_user_id)  # partner -> owned
+    )
+    if allowed:
         return sub.id, sub.role, sub.rate_limit_per_min, sub.client_ref
     return None
 
@@ -215,12 +239,8 @@ def _rate_ok(user_id: int, limit: int) -> bool:
     missing rate limiter shouldn't take the whole API down."""
     if not limit or limit <= 0:
         return True
-    from django.conf import settings
-
     try:
-        import redis
-
-        client = redis.from_url(settings.CELERY_BROKER_URL)
+        client = _redis()
         window = int(time.time() // 60)
         key = f"ratelimit:{user_id}:{window}"
         n = client.incr(key)

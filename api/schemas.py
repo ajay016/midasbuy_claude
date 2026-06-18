@@ -31,6 +31,9 @@ class PlayerLookupResponse(BaseModel):
     success: bool
     player:  PlayerInfo | None = None
     error:   str | None = None
+    # Server-side per-phase timings in milliseconds (auth, charge, session, upstream,
+    # server_total). Lets a caller see exactly where time goes on our side.
+    timings: dict | None = None
 
 
 class RedeemResponse(BaseModel):

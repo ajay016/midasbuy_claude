@@ -1,12 +1,14 @@
 import logging
 import os
+import time
+
 import django
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "midasbuy_project.settings")
 django.setup()
 
 from asgiref.sync import sync_to_async
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 
 from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
@@ -23,6 +25,46 @@ from .service import check_code_status, get_player_info, redeem_all_in_one, subm
 
 logger = logging.getLogger(__name__)
 api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
+
+
+# ── Request timing ─────────────────────────────────────────────────────────────
+# Stamp every request at the very start (before auth runs) so handlers can measure
+# each phase. Total wall time is returned on the `Server-Timing` response header
+# (visible in any browser's Network tab) and `X-Process-Time-Ms`.
+@api_app.middleware("http")
+async def _timing_middleware(request: Request, call_next):
+    request.state.t_start = time.perf_counter()
+    request.state.spans = {}
+    response = await call_next(request)
+    total_ms = round((time.perf_counter() - request.state.t_start) * 1000, 1)
+    parts = [f"total;dur={total_ms}"] + [
+        f"{k};dur={v}" for k, v in getattr(request.state, "spans", {}).items()
+    ]
+    response.headers["Server-Timing"] = ", ".join(parts)
+    response.headers["X-Process-Time-Ms"] = str(total_ms)
+    return response
+
+
+class _Timer:
+    """Measures per-phase server time. `auth` = everything before the handler ran
+    (signature verify, nonce/rate-limit Redis, DB lookups)."""
+    def __init__(self, request: Request):
+        self.request = request
+        t_start = getattr(request.state, "t_start", time.perf_counter())
+        self.prev = time.perf_counter()
+        self.spans = {"auth": round((self.prev - t_start) * 1000, 1)}
+        self.t_start = t_start
+
+    def mark(self, name: str):
+        now = time.perf_counter()
+        self.spans[name] = round((now - self.prev) * 1000, 1)
+        self.prev = now
+
+    def finish(self) -> dict:
+        self.spans["server_total"] = round((time.perf_counter() - self.t_start) * 1000, 1)
+        self.request.state.spans = dict(self.spans)
+        return self.spans
+
 
 # Auth (register/login/refresh/api-keys) under /api/auth/* — public + protected.
 api_app.include_router(auth_router)
@@ -197,16 +239,22 @@ async def _start_prewarm():
 
 @api_app.get("/player-info", response_model=PlayerLookupResponse)
 async def player_info(
+    request:      Request,
     player_id:    str = Query(...),
     country_code: str = Query("bd"),
     identity:     dict = Depends(require_order),
 ):
+    t = _Timer(request)
     await charge(identity, 1)  # player lookup: per request
+    t.mark("charge")
     account_id, ssp, cookies = await _select_session(metered=False)
+    t.mark("session")
     result = await get_player_info(player_id, country_code, ssp, cookies)
+    t.mark("upstream")
     await _report(account_id, result)
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
+    result.timings = t.finish()
     return result
 
 

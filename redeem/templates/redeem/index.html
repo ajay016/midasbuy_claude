@@ -214,14 +214,28 @@
         return data;
     }
 
+    let lastLookupTimings = null;
     async function fetchPlayerInfo(playerId, country) {
+        const t0 = performance.now();
         const resp = await fetch(
             `/api/player-info?player_id=${encodeURIComponent(playerId)}&country_code=${country}`,
             { headers: authHeaders() }
         );
         const data = await resp.json();
+        lastLookupTimings = { client_ms: Math.round(performance.now() - t0), server: data.timings || null };
         if (!resp.ok || !data.success) { throw new Error(data.detail || data.error || "Player not found."); }
         return data.player;
+    }
+
+    function showLookupTimings() {
+        if (!lastLookupTimings) return;
+        const s = lastLookupTimings.server || {};
+        const parts = [`round-trip ${lastLookupTimings.client_ms} ms`];
+        if (s.server_total != null) parts.push(`server ${s.server_total} ms`);
+        if (s.upstream != null)     parts.push(`upstream ${s.upstream} ms`);
+        if (s.session != null)      parts.push(`session ${s.session} ms`);
+        if (s.auth != null)         parts.push(`auth ${s.auth} ms`);
+        setStatus("lookupStatus", "success", "⏱ " + parts.join(" &middot; "));
     }
 
     function applyPlayerInfo(playerId, player) {
@@ -282,7 +296,7 @@
         try {
             const player = await fetchPlayerInfo(playerId, country);
             applyPlayerInfo(playerId, player);
-            clearStatus("lookupStatus");
+            showLookupTimings();
         } catch (err) {
             setStatus("lookupStatus", "error", err.message || "Network error. Please try again.");
         } finally {

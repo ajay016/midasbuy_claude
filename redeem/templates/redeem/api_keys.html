@@ -8,6 +8,16 @@
   <div class="sub">Keys authenticate your server-to-server API calls. The secret signs each request and is never sent over the network — see the <a href="{% url 'api_docs' %}">API Docs</a>.</div>
 </div>
 
+<div class="card" style="max-width:720px;margin-bottom:16px;">
+  <div class="account-name" style="margin-bottom:6px;">Your client identifier</div>
+  <div class="muted" style="font-size:12px;margin-bottom:8px;">
+    Every signed API request must include an <code>X-Client-Id</code> header. To bill a
+    request to <b>yourself</b>, send the value below.{% if user.is_partner %} To bill one of
+    your clients, send <i>their</i> identifier from <a href="{% url 'my_clients' %}">My Clients</a>.{% endif %}
+  </div>
+  <code style="font-size:13px;">{{ user.client_ref }}</code>
+</div>
+
 {% if secret_once %}
 <div class="secret-reveal">
   <h3>New API key — copy the secret now</h3>

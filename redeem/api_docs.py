@@ -147,9 +147,11 @@ CLIENT_SETUP = {
     "python": '''import hashlib, hmac, json, time, uuid, requests
 from urllib.parse import urlencode
 
-BASE   = "''' + HOST + '''"
-KEY_ID = "mk_..."   # from the panel -> API Keys
-SECRET = "sk_..."   # shown ONCE when the key was created
+BASE      = "''' + HOST + '''"
+KEY_ID    = "mk_..."   # from the panel -> API Keys
+SECRET    = "sk_..."   # shown ONCE when the key was created
+CLIENT_ID = "..."      # REQUIRED X-Client-Id: your own client_ref (panel -> API Keys),
+                       # or one of your clients' refs to attribute the request to them
 
 def signed_request(method, path, *, params=None, json_body=None):
     """Sign and send one API request. The secret never leaves your server."""
@@ -161,7 +163,8 @@ def signed_request(method, path, *, params=None, json_body=None):
                            hashlib.sha256(body).hexdigest(), ts, nonce])
     sig = hmac.new(SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()
     headers = {"X-Api-Key": KEY_ID, "X-Timestamp": ts, "X-Nonce": nonce,
-               "X-Signature": sig, "Content-Type": "application/json"}
+               "X-Signature": sig, "X-Client-Id": CLIENT_ID,
+               "Content-Type": "application/json"}
     url = BASE + path + (("?" + query) if query else "")
     return requests.request(method, url, data=body, headers=headers, timeout=30)''',
 
@@ -178,7 +181,9 @@ def signed_request(method, path, *, params=None, json_body=None):
     sig = hmac.new(settings.MIDASBUY_API_SECRET.encode(), canonical.encode(),
                    hashlib.sha256).hexdigest()
     headers = {"X-Api-Key": settings.MIDASBUY_API_KEY_ID, "X-Timestamp": ts,
-               "X-Nonce": nonce, "X-Signature": sig, "Content-Type": "application/json"}
+               "X-Nonce": nonce, "X-Signature": sig,
+               "X-Client-Id": settings.MIDASBUY_CLIENT_ID,  # REQUIRED: your client_ref
+               "Content-Type": "application/json"}
     url = settings.MIDASBUY_API_BASE + path + (("?" + query) if query else "")
     return requests.request(method, url, data=body, headers=headers, timeout=30)''',
 
