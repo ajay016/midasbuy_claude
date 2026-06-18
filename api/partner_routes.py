@@ -12,7 +12,6 @@ their own API key plus the `X-Client-Id: <client_ref>` header to attribute (and
 meter) the request to that client.
 """
 import logging
-import secrets
 from typing import Optional
 
 from asgiref.sync import sync_to_async
@@ -75,80 +74,69 @@ def _client_dict(user) -> dict:
     }
 
 
-def _owned_qs(partner_id: int):
+# All client create/edit/usage logic lives in apiauth.clients so the API and the
+# panel share ONE implementation. These thin wrappers just resolve the caller to a
+# partner, scope to owned clients, and translate ClientError -> HTTP status codes.
+def _partner(partner_id: int):
     from apiauth.models import User
 
-    return User.objects.filter(role=User.ROLE_CLIENT, partner_id=partner_id)
+    return User.objects.get(pk=partner_id)
 
 
-def _list_clients_sync(partner_id: int) -> list:
-    return [_client_dict(u) for u in _owned_qs(partner_id)]
+def _owned_or_404(partner, client_ref: str):
+    from apiauth import clients
 
-
-def _get_owned_or_404(partner_id: int, client_ref: str):
-    user = _owned_qs(partner_id).filter(client_ref=client_ref).first()
+    user = clients.get_owned_client(partner, client_ref)
     if user is None:
         raise HTTPException(status_code=404, detail="No such client under your account.")
     return user
 
 
-def _grant_sub(user, plan: str, request_limit, unlimited: bool):
-    from billing.models import Subscription
+def _list_clients_sync(partner_id: int) -> list:
+    from apiauth import clients
 
-    if plan not in dict(Subscription.PLAN_CHOICES):
-        raise HTTPException(status_code=400, detail="Unknown plan.")
-    limit = None if unlimited else request_limit
-    Subscription.grant(user, plan, request_limit=limit)
+    return [_client_dict(u) for u in clients.owned_clients(_partner(partner_id))]
 
 
 def _create_client_sync(partner_id: int, data: ClientCreate) -> dict:
-    from apiauth.models import User
+    from apiauth import clients
 
-    email = (data.email or "").strip().lower()
-    if email:
-        if User.objects.filter(email__iexact=email).exists():
-            raise HTTPException(status_code=409, detail="That email is already in use.")
-    else:
-        # Sub-clients don't log in, so a unique synthetic address is fine.
-        email = f"client+{secrets.token_hex(8)}@partner-{partner_id}.local"
-
-    user = User(
-        name=data.name.strip(),
-        email=email,
-        role=User.ROLE_CLIENT,
-        partner_id=partner_id,
-        allowed_ips=data.allowed_ips or "",
-        can_order=True,        # the partner places orders on this client's behalf
-        can_use_api=False,     # the partner calls with their own key + X-Client-Id
-    )
-    user.set_unusable_password()
-    user.save()
-
-    if data.unlimited or data.request_limit is not None:
-        _grant_sub(user, "api", data.request_limit, data.unlimited)
+    try:
+        user = clients.create_client(
+            _partner(partner_id), name=data.name, email=data.email,
+            allowed_ips=data.allowed_ips, request_limit=data.request_limit,
+            unlimited=data.unlimited,
+        )
+    except clients.ClientError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return _client_dict(user)
 
 
 def _update_client_sync(partner_id: int, client_ref: str, data: ClientUpdate) -> dict:
-    user = _get_owned_or_404(partner_id, client_ref)
-    if data.name is not None:
-        user.name = data.name.strip()
-    if data.allowed_ips is not None:
-        user.allowed_ips = data.allowed_ips
-    if data.is_active is not None:
-        user.is_active = data.is_active
-    user.save()
+    from apiauth import clients
+
+    user = _owned_or_404(_partner(partner_id), client_ref)
+    try:
+        clients.update_client(user, name=data.name, allowed_ips=data.allowed_ips,
+                              is_active=data.is_active)
+    except clients.ClientError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _client_dict(user)
 
 
 def _set_subscription_sync(partner_id: int, client_ref: str, data: SubscriptionSet) -> dict:
-    user = _get_owned_or_404(partner_id, client_ref)
-    _grant_sub(user, data.plan, data.request_limit, data.unlimited)
+    from apiauth import clients
+
+    user = _owned_or_404(_partner(partner_id), client_ref)
+    try:
+        clients.set_client_subscription(user, data.plan, data.request_limit, data.unlimited)
+    except clients.ClientError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _client_dict(user)
 
 
 def _get_client_sync(partner_id: int, client_ref: str) -> dict:
-    return _client_dict(_get_owned_or_404(partner_id, client_ref))
+    return _client_dict(_owned_or_404(_partner(partner_id), client_ref))
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────

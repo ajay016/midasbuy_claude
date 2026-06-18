@@ -53,6 +53,9 @@ manage_accounts_required = capability_required(
 manage_users_required = capability_required(
     "allowed_to_manage_users", "Only admins can manage users."
 )
+manage_clients_required = capability_required(
+    "allowed_to_manage_clients", "Only partners and admins can manage clients."
+)
 use_api_required = capability_required(
     "allowed_to_use_api", "API access isn't enabled on your account."
 )

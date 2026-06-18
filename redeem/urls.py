@@ -29,8 +29,16 @@ urlpatterns = [
     path("subscriptions/<int:pk>/edit/", views.package_edit, name="package_edit"),
     path("subscriptions/<int:pk>/delete/", views.package_delete, name="package_delete"),
 
-    # Usage overview (admin only)
+    # Usage / clients overview (admin only)
     path("usage/", views.usage_overview, name="usage_overview"),
+    path("usage/partner/<int:pk>/", views.admin_partner_clients, name="admin_partner_clients"),
+
+    # Partner self-service: my clients
+    path("my-clients/", views.my_clients, name="my_clients"),
+    path("my-clients/create/", views.my_client_create, name="my_client_create"),
+    path("my-clients/<str:client_ref>/edit/", views.my_client_update, name="my_client_update"),
+    path("my-clients/<str:client_ref>/subscription/", views.my_client_subscription,
+         name="my_client_subscription"),
 
     # Self-service API keys
     path("api-keys/", views.my_api_keys, name="my_api_keys"),

@@ -1,0 +1,102 @@
+{% extends "redeem/base.html" %}
+{% block title %}My Clients · Midasbuy Panel{% endblock %}
+{% block topbar_title %}My Clients{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">My Clients</h1>
+  <div class="sub">Create and manage your own clients. Each client's <b>identifier</b> is the
+    <code>X-Client-Id</code> you send (with your API key) to attribute and meter a request to
+    that client. See the <a href="{% url 'partner_api_docs' %}">Partner API docs</a>.</div>
+</div>
+
+<div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);align-items:start;">
+  <!-- Create -->
+  <div class="card">
+    <div class="account-name" style="margin-bottom:14px;">New client</div>
+    <form method="post" action="{% url 'my_client_create' %}">
+      {% csrf_token %}
+      <div class="field">
+        <label>Name</label>
+        <input type="text" name="name" placeholder="e.g. Acme Store" required />
+      </div>
+      <div class="field">
+        <label>Email <span class="muted" style="font-weight:400;">(optional)</span></label>
+        <input type="email" name="email" placeholder="Leave blank to auto-generate" />
+      </div>
+      <div class="field">
+        <label>Allowed IPs <span class="muted" style="font-weight:400;">(optional)</span></label>
+        <textarea name="allowed_ips" rows="2" placeholder="e.g. 203.0.113.7, 198.51.100.0/24"></textarea>
+      </div>
+      <div class="field">
+        <label>API request limit / 30 days</label>
+        <input type="number" name="request_limit" min="1" placeholder="e.g. 5000 (blank = none yet)" />
+        <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:8px;font-weight:400;">
+          <input type="checkbox" name="unlimited" style="width:auto;" /> Unlimited (uncapped, still metered)
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Create client</button>
+    </form>
+  </div>
+
+  <!-- Existing -->
+  <div class="card" style="padding:8px 8px;">
+    <table class="table">
+      <thead>
+        <tr><th>Client</th><th>Identifier</th><th>API usage</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><div style="font-weight:700;">{{ row.user.name }}</div>
+            <div class="muted" style="font-size:11px;">{{ row.user.email }}</div></td>
+          <td class="muted" style="font-family:ui-monospace,monospace;font-size:12px;">{{ row.user.client_ref }}</td>
+          <td class="muted" style="font-size:12px;">
+            {% if row.api and row.api.is_active %}
+              {% if row.api.is_unlimited %}{{ row.api.used }} · ∞{% else %}{{ row.api.used }} / {{ row.api.request_limit }}{% endif %}
+            {% else %}<span class="badge badge-grey">No plan</span>{% endif %}
+          </td>
+          <td>{% if row.user.is_active %}<span class="badge badge-green">Active</span>{% else %}<span class="badge badge-grey">Disabled</span>{% endif %}</td>
+          <td style="text-align:right;">
+            <button class="btn btn-ghost" type="button" onclick="document.getElementById('e-{{ row.user.pk }}').classList.toggle('show-row')">Manage</button>
+          </td>
+        </tr>
+        <tr id="e-{{ row.user.pk }}" class="edit-row" hidden>
+          <td colspan="5" style="background:rgba(255,255,255,0.02);">
+            <div style="display:flex;gap:18px;flex-wrap:wrap;padding:8px 4px;">
+              <form method="post" action="{% url 'my_client_update' row.user.client_ref %}" style="flex:1;min-width:260px;">
+                {% csrf_token %}
+                <div class="account-name" style="font-size:13px;margin-bottom:8px;">Details</div>
+                <div class="field"><label style="font-size:11px;">Name</label>
+                  <input type="text" name="name" value="{{ row.user.name }}" /></div>
+                <div class="field"><label style="font-size:11px;">Allowed IPs</label>
+                  <textarea name="allowed_ips" rows="2">{{ row.user.allowed_ips }}</textarea></div>
+                <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:400;margin-bottom:10px;">
+                  <input type="checkbox" name="is_active" style="width:auto;" {% if row.user.is_active %}checked{% endif %} /> Active</label>
+                <button class="btn btn-outline" type="submit" style="width:100%;">Save details</button>
+              </form>
+              <form method="post" action="{% url 'my_client_subscription' row.user.client_ref %}" style="flex:1;min-width:260px;">
+                {% csrf_token %}
+                <div class="account-name" style="font-size:13px;margin-bottom:8px;">API subscription</div>
+                <div class="field"><label style="font-size:11px;">Request limit / 30 days</label>
+                  <input type="number" name="request_limit" min="1" value="{% if row.api and not row.api.is_unlimited %}{{ row.api.request_limit }}{% endif %}" placeholder="blank = unlimited" /></div>
+                <label class="muted" style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:400;margin-bottom:10px;">
+                  <input type="checkbox" name="unlimited" style="width:auto;" {% if row.api.is_unlimited %}checked{% endif %} /> Unlimited</label>
+                <button class="btn btn-outline" type="submit" style="width:100%;">{% if row.api and row.api.is_active %}Renew / update{% else %}Grant{% endif %}</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="empty">No clients yet — create one on the left.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "redeem/_pager.html" with page=page %}
+  </div>
+</div>
+
+<style>
+  tr.edit-row.show-row[hidden] { display: table-row; }
+</style>
+{% endblock %}

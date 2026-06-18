@@ -5,10 +5,14 @@ from django.contrib.auth import logout as auth_logout
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
+from django.core.paginator import Paginator
+
 from accounts.models import MidasbuyAccount
+from apiauth import clients as client_service
 from apiauth.models import ApiKey
 from billing.models import Package, Subscription
 from apiauth.panel import (
+    manage_clients_required,
     manage_users_required,
     order_required,
     panel_login_required,
@@ -431,19 +435,112 @@ def package_delete(request, pk):
     return redirect("package_list")
 
 
-# ── Usage overview (admin only) ────────────────────────────────────────────────
+# ── Usage / clients overview (admin) ───────────────────────────────────────────
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _client_meter_rows(qs, request, per_page=25):
+    """Paginate a client queryset and attach each one's panel/api meter in TWO
+    queries total (no per-row hits) — keeps big lists from loading slowly."""
+    page = Paginator(qs, per_page).get_page(request.GET.get("page"))
+    by_user = {}
+    for s in Subscription.objects.filter(user_id__in=[c.id for c in page]):
+        by_user.setdefault(s.user_id, {})[s.plan] = s
+    rows = [{"user": c,
+             "panel": by_user.get(c.id, {}).get(Subscription.PLAN_PANEL),
+             "api": by_user.get(c.id, {}).get(Subscription.PLAN_API)} for c in page]
+    return rows, page
+
+
 @manage_users_required
 def usage_overview(request):
-    """At-a-glance panel + API meters for every client and partner."""
-    users = (User.objects
-             .filter(role__in=[User.ROLE_CLIENT, User.ROLE_PARTNER])
-             .order_by("role", "name"))
-    rows = []
-    for u in users:
-        summary = Subscription.summary_for(u)
-        rows.append({
-            "user": u,
-            "panel": summary[Subscription.PLAN_PANEL],
-            "api": summary[Subscription.PLAN_API],
-        })
-    return render(request, "redeem/usage.html", {"rows": rows})
+    """Admin overview: partners (with combined usage + a drill-down link) and our
+    direct clients (those not under any partner)."""
+    partners = client_service.partners_with_usage()        # 3 queries, no N+1
+    direct_rows, direct_page = _client_meter_rows(client_service.direct_clients(), request)
+    return render(request, "redeem/usage.html",
+                  {"partners": partners, "direct_rows": direct_rows, "direct_page": direct_page})
+
+
+@manage_users_required
+def admin_partner_clients(request, pk):
+    """Drill-down from the overview: one partner's own usage + each of their
+    clients' individual usage. Admin edits a client via the team form."""
+    partner = get_object_or_404(User, pk=pk, role=User.ROLE_PARTNER)
+    summary = Subscription.summary_for(partner)
+    rows, page = _client_meter_rows(client_service.owned_clients(partner), request)
+    return render(request, "redeem/partner_clients.html", {
+        "partner": partner,
+        "partner_panel": summary[Subscription.PLAN_PANEL],
+        "partner_api": summary[Subscription.PLAN_API],
+        "rows": rows, "page": page, "is_admin_view": True,
+    })
+
+
+# ── Partner self-service: manage my own clients ────────────────────────────────
+@manage_clients_required
+def my_clients(request):
+    """A partner sees and manages only the clients they own (create/edit/quota)."""
+    rows, page = _client_meter_rows(client_service.owned_clients(request.user), request)
+    return render(request, "redeem/my_clients.html", {"rows": rows, "page": page})
+
+
+@require_POST
+@manage_clients_required
+def my_client_create(request):
+    try:
+        c = client_service.create_client(
+            request.user,
+            name=request.POST.get("name"),
+            email=(request.POST.get("email") or "").strip() or None,
+            allowed_ips=(request.POST.get("allowed_ips") or "").strip(),
+            request_limit=_int_or_none(request.POST.get("request_limit")),
+            unlimited=bool(request.POST.get("unlimited")),
+        )
+        messages.success(
+            request,
+            f"Client “{c.name}” created. Send X-Client-Id: {c.client_ref} to attribute "
+            "its requests.")
+    except client_service.ClientError as e:
+        messages.error(request, str(e))
+    return redirect("my_clients")
+
+
+@require_POST
+@manage_clients_required
+def my_client_update(request, client_ref):
+    c = client_service.get_owned_client(request.user, client_ref)
+    if c is None:
+        messages.error(request, "No such client under your account.")
+        return redirect("my_clients")
+    try:
+        client_service.update_client(
+            c, name=request.POST.get("name"),
+            allowed_ips=(request.POST.get("allowed_ips") or "").strip(),
+            is_active=bool(request.POST.get("is_active")))
+        messages.success(request, "Client saved.")
+    except client_service.ClientError as e:
+        messages.error(request, str(e))
+    return redirect("my_clients")
+
+
+@require_POST
+@manage_clients_required
+def my_client_subscription(request, client_ref):
+    c = client_service.get_owned_client(request.user, client_ref)
+    if c is None:
+        messages.error(request, "No such client under your account.")
+        return redirect("my_clients")
+    try:
+        client_service.set_client_subscription(
+            c, "api",
+            request_limit=_int_or_none(request.POST.get("request_limit")),
+            unlimited=bool(request.POST.get("unlimited")))
+        messages.success(request, "Subscription updated.")
+    except client_service.ClientError as e:
+        messages.error(request, str(e))
+    return redirect("my_clients")

@@ -1,0 +1,12 @@
+{% comment %}Simple pager. Expects `page` = a Django Paginator page object.{% endcomment %}
+{% if page.paginator.num_pages > 1 %}
+<div style="display:flex;justify-content:center;align-items:center;gap:10px;padding:12px;">
+  {% if page.has_previous %}
+  <a class="btn btn-ghost" href="?page={{ page.previous_page_number }}">← Prev</a>
+  {% endif %}
+  <span class="muted" style="font-size:12px;">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}
+  <a class="btn btn-ghost" href="?page={{ page.next_page_number }}">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
