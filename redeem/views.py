@@ -102,6 +102,19 @@ def index(request):
     )
 
 
+@panel_login_required
+def panel_api_token(request):
+    """Mint a fresh short-lived API access token for the logged-in panel user.
+    The panel calls this when its embedded token expires (it's only valid ~15 min),
+    so a tab left open keeps working without a manual reload. Django session auth
+    gates it — no token needed to get a token."""
+    from django.http import JsonResponse
+
+    from apiauth.security import make_access_token
+
+    return JsonResponse({"token": make_access_token(request.user.id)})
+
+
 @order_required
 def bulk_page(request):
     """Panel UI for bulk lookups / code-status / redeem. Calls /api/bulk/* with a

@@ -1417,6 +1417,19 @@ def _discard_cached_session(session: _CachedBrowserSession) -> None:
     _close_cached_session(session)
 
 
+def _discard_cached_session_for_thread(storage_state_path: str, country_code: str) -> None:
+    """Close and forget the cached session for this (path, country) on the CURRENT
+    thread. Playwright's sync API refuses to start a second instance while one is
+    already live on the same thread, so we must tear the cached manager down before
+    falling back to a fresh sync_playwright() on that thread."""
+    key = _session_cache_key(storage_state_path, country_code)
+    with _SESSION_CACHE_LOCK:
+        session = _SESSION_CACHE.pop(key, None)
+    if session is not None:
+        with session.lock:
+            _close_cached_session(session)
+
+
 def close_cached_browser_sessions() -> None:
     """Best-effort shutdown hook for warmed browser sessions."""
     with _SESSION_CACHE_LOCK:
@@ -2169,6 +2182,10 @@ def call_api_in_browser(
         if cached_data is not None:
             return cached_data
         logger.warning("[CRYPTO] cached call failed; falling back to a fresh browser endpoint=%s", endpoint)
+        # A cached Playwright manager may still be alive on this worker thread; the
+        # fresh sync_playwright() below would then raise "Sync API inside the asyncio
+        # loop". Tear it down first so the fallback has the thread to itself.
+        _discard_cached_session_for_thread(storage_state_path, country_code)
 
     sync_playwright, PWTimeout = _get_playwright()
 

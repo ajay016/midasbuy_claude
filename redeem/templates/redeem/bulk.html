@@ -71,8 +71,21 @@
 
 {% block scripts %}
 <script>
-  const API_TOKEN = "{{ api_token|escapejs }}";
+  let API_TOKEN = "{{ api_token|escapejs }}";
   const headers = () => ({ "Authorization": "Bearer " + API_TOKEN, "Content-Type": "application/json" });
+  async function refreshToken() {
+    try {
+      const r = await fetch("{% url 'panel_api_token' %}", { headers: { "X-Requested-With": "fetch" } });
+      if (!r.ok) return false;
+      API_TOKEN = (await r.json()).token; return true;
+    } catch (e) { return false; }
+  }
+  // Fetch that refreshes the short-lived token once on a 401, then retries.
+  async function apiFetch(url, build) {
+    let resp = await fetch(url, build());
+    if (resp.status === 401 && await refreshToken()) resp = await fetch(url, build());
+    return resp;
+  }
 
   const opSel = document.getElementById("op");
   opSel.addEventListener("change", syncFields);
@@ -114,7 +127,7 @@
     document.getElementById("results").style.display = "none";
     setStatus("loading", '<span class="spinner"></span>Submitting job…');
     try {
-      const r = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+      const r = await apiFetch(url, () => ({ method: "POST", headers: headers(), body: JSON.stringify(payload) }));
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Request failed.");
       setStatus("loading", '<span class="spinner"></span>Job #' + data.job_id + ' running…');
@@ -128,7 +141,7 @@
 
   async function pollJob(jobId) {
     try {
-      const r = await fetch("/api/bulk/jobs/" + jobId, { headers: { "Authorization": "Bearer " + API_TOKEN } });
+      const r = await apiFetch("/api/bulk/jobs/" + jobId, () => ({ headers: { "Authorization": "Bearer " + API_TOKEN } }));
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || "Could not read job.");
       const pct = d.progress_percent || 0;

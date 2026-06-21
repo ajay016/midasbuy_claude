@@ -7,6 +7,7 @@ urlpatterns = [
     path("docs/", views.docs_view, name="api_docs"),
     path("docs/partner/", views.partner_docs_view, name="partner_api_docs"),
     path("bulk/", views.bulk_page, name="bulk_page"),
+    path("api-token/", views.panel_api_token, name="panel_api_token"),
     path("login/", views.login_view, name="panel_login"),
     path("logout/", views.logout_view, name="panel_logout"),
 
