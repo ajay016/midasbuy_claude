@@ -167,16 +167,22 @@ async def require_auth(request: Request) -> dict:
                 detail="Missing required X-Client-Id header. Send the client_ref the "
                        "request is for (your own client_ref to bill yourself).",
             )
-        target = await sync_to_async(_resolve_billing_target)(
-            info["user_id"], info.get("is_admin"), info.get("is_partner"), client_ref
-        )
-        if target is None:
-            raise HTTPException(
-                status_code=403,
-                detail="Unknown X-Client-Id, or you're not allowed to bill that client.",
+        if client_ref == info.get("client_ref"):
+            # Billing yourself — everything is already in `info` from auth, so no
+            # extra DB round-trip is needed (the common case for direct clients and
+            # partners acting for themselves).
+            info["billing_client_ref"] = client_ref
+        else:
+            target = await sync_to_async(_resolve_billing_target)(
+                info["user_id"], info.get("is_admin"), info.get("is_partner"), client_ref
             )
-        (info["billing_user_id"], info["billing_role"],
-         info["billing_rate_limit_per_min"], info["billing_client_ref"]) = target
+            if target is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Unknown X-Client-Id, or you're not allowed to bill that client.",
+                )
+            (info["billing_user_id"], info["billing_role"],
+             info["billing_rate_limit_per_min"], info["billing_client_ref"]) = target
     # Browser/JWT (panel) sessions are always billed to the signed-in user; any
     # X-Client-Id header on those is ignored.
     return info
