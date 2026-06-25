@@ -35,7 +35,13 @@ RUN python -m patchright install chromium
 
 COPY . .
 
+# Entrypoint starts a virtual X display (for the headful login browser), then
+# execs the command below. Placed in /usr/local/bin so the `.:/app` dev mount
+# can't shadow it.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 8000
-# ASGI server hosting both Django (/) and FastAPI (/api). xvfb-run provides a
-# virtual X display so the in-process (headful) browser can launch.
-CMD ["xvfb-run", "-a", "uvicorn", "midasbuy_project.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# ASGI server hosting both Django (/) and FastAPI (/api).
+CMD ["uvicorn", "midasbuy_project.asgi:application", "--host", "0.0.0.0", "--port", "8000"]

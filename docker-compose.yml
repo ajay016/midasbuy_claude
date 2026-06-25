@@ -48,8 +48,8 @@ services:
       - redis
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # xvfb-run gives the in-process (headful) browser a virtual X display.
-    command: xvfb-run -a uvicorn midasbuy_project.asgi:application --host 0.0.0.0 --port 8000 --reload
+    # The image entrypoint starts the virtual X display; just run the server here.
+    command: uvicorn midasbuy_project.asgi:application --host 0.0.0.0 --port 8000 --reload
 
   worker:
     build:
@@ -69,4 +69,5 @@ services:
       - redis
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: xvfb-run -a celery -A midasbuy_project worker -l info --concurrency=2
+    # The image entrypoint starts the virtual X display; just run celery here.
+    command: celery -A midasbuy_project worker -l info --concurrency=2

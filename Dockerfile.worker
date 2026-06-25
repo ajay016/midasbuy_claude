@@ -34,6 +34,10 @@ RUN python -m patchright install chromium
 
 COPY . .
 
-# xvfb-run gives the browser a virtual display; concurrency = parallel jobs
-# (each slot drives its own browser, so keep it small).
-CMD ["xvfb-run", "-a", "celery", "-A", "midasbuy_project", "worker", "-l", "info", "--concurrency=2"]
+# Entrypoint starts a virtual X display, then execs the command below.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# concurrency = parallel jobs (each slot drives its own browser, so keep small).
+CMD ["celery", "-A", "midasbuy_project", "worker", "-l", "info", "--concurrency=2"]
