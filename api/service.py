@@ -12,7 +12,7 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from threading import current_thread
+from threading import Lock, current_thread
 from typing import Optional
 
 from .schemas import PlayerInfo, PlayerLookupResponse, RedeemResponse
@@ -21,11 +21,33 @@ logger = logging.getLogger(__name__)
 
 _APPID = "1450015065"
 _PF    = "mds_pc_browser-yy-android-midasweb-midasbuy-self.midasbuy_saas"
-_BROWSER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-browser")
+
+# One dedicated single-thread browser worker PER account (keyed by storage_state_path).
+# A cached patchright sync_playwright() manager is thread-affine, and two live managers
+# CANNOT share a thread — doing so raises "Sync API inside the asyncio loop" the moment
+# a second account is used. So each account keeps its own thread, exactly like the
+# captcha solver below has its own. (All accounts sharing one thread is what broke
+# multi-account lookups/redeems once account rotation actually alternated accounts.)
+_BROWSER_EXECUTORS: dict = {}
+_BROWSER_EXECUTORS_LOCK = Lock()
 # Separate thread for the captcha solver — it spins up its own sync_playwright,
-# which must not share a thread with the cached session's live Playwright loop.
+# which must not share a thread with a cached session's live Playwright loop.
 _SOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="midasbuy-captcha")
 _QUERY_REDEEM_ENDPOINT = "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo"
+
+
+def _browser_executor(session_key: Optional[str]) -> ThreadPoolExecutor:
+    """Return the dedicated single-thread executor for this account, creating it on
+    first use. Keyed by storage_state_path so each account's browser session lives
+    on its own thread."""
+    key = session_key or "_default"
+    with _BROWSER_EXECUTORS_LOCK:
+        ex = _BROWSER_EXECUTORS.get(key)
+        if ex is None:
+            idx = len(_BROWSER_EXECUTORS)
+            ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"midasbuy-browser{idx}")
+            _BROWSER_EXECUTORS[key] = ex
+        return ex
 
 
 async def _run_solver_call(func, *args):
@@ -42,30 +64,37 @@ def _run_browser_call_sync(func, args):
     return func(*args)
 
 
-async def _run_browser_call(func, *args):
+async def _run_browser_call(func, *args, session_key: Optional[str] = None):
+    """Run a (sync) browser call on this account's dedicated thread. `session_key`
+    is the account's storage_state_path so each account stays on its own thread."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_BROWSER_EXECUTOR, _run_browser_call_sync, func, args)
+    return await loop.run_in_executor(
+        _browser_executor(session_key), _run_browser_call_sync, func, args
+    )
 
 
 async def warm_account_session(storage_state_path: str, country_code: str = "bd") -> bool:
-    """Pre-warm one account's cached browser session on the dedicated browser thread,
+    """Pre-warm one account's cached browser session on its dedicated browser thread,
     so the first real request for that (account, country) isn't a cold start."""
     from accounts.services.playwright_crypto import warm_cached_session
 
-    return await _run_browser_call(warm_cached_session, storage_state_path, country_code)
+    return await _run_browser_call(
+        warm_cached_session, storage_state_path, country_code, session_key=storage_state_path
+    )
 
 
 async def shutdown_browser_worker() -> None:
     from accounts.services.playwright_crypto import close_cached_browser_sessions
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        _BROWSER_EXECUTOR,
-        _run_browser_call_sync,
-        close_cached_browser_sessions,
-        (),
-    )
-    _BROWSER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    with _BROWSER_EXECUTORS_LOCK:
+        executors = list(_BROWSER_EXECUTORS.values())
+    for ex in executors:
+        try:
+            await loop.run_in_executor(ex, _run_browser_call_sync, close_cached_browser_sessions, ())
+        except Exception:
+            pass
+        ex.shutdown(wait=False, cancel_futures=True)
     _SOLVER_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
@@ -102,6 +131,7 @@ async def _api_call(
         return await _run_browser_call(
             call_api_in_browser,
             payload, endpoint, storage_state_path, country_code, method,
+            session_key=storage_state_path,
         )
 
     # ── Primary: pure Python encryption (no browser spin-up) ──────────────────
@@ -144,6 +174,7 @@ async def _api_call(
     return await _run_browser_call(
         call_api_in_browser,
         payload, endpoint, storage_state_path, country_code, method,
+        session_key=storage_state_path,
     )
 
 
@@ -465,6 +496,7 @@ async def submit_redeem(
             },
             storage_state_path,
             country_code,
+            session_key=storage_state_path,
         )
 
         if (
