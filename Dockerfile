@@ -36,5 +36,6 @@ RUN python -m patchright install chromium
 COPY . .
 
 EXPOSE 8000
-# ASGI server hosting both Django (/) and FastAPI (/api)
-CMD ["uvicorn", "midasbuy_project.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+# ASGI server hosting both Django (/) and FastAPI (/api). xvfb-run provides a
+# virtual X display so the in-process (headful) browser can launch.
+CMD ["xvfb-run", "-a", "uvicorn", "midasbuy_project.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
