@@ -192,6 +192,10 @@ MIDASBUY_TRUST_FORWARDED_FOR = env.bool("MIDASBUY_TRUST_FORWARDED_FOR", default=
 
 MIDASBUY_WARM_ON_STARTUP = env.bool("MIDASBUY_WARM_ON_STARTUP", default=True)
 MIDASBUY_WARM_COUNTRIES = env.list("MIDASBUY_WARM_COUNTRIES", default=["bd"])
+# Seconds between background keep-warm sweeps. 0 disables it (sessions then go stale
+# and the NEXT request pays a cold rebuild — the "occasional slow lookup"). A few
+# minutes keeps every account's cached browser session hot so real requests stay fast.
+MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=300)
 # Seconds between keep-warm sweeps (0 disables the periodic refresh; startup warm
 # still runs). Already-warm sessions are reused cheaply; only expired ones rebuild.
 MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=600)

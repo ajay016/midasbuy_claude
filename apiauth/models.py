@@ -171,7 +171,9 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     @property
     def allowed_to_manage_accounts(self) -> bool:
-        return self.is_admin or self.can_manage_accounts
+        # Bot accounts hold the upstream Midasbuy logins, so viewing/managing them
+        # is restricted to admins only (clients, partners and staff never see them).
+        return self.is_admin
 
     @property
     def allowed_to_use_api(self) -> bool:
