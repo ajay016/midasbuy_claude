@@ -1,0 +1,5 @@
+# Shell scripts must stay LF (not CRLF) so they run inside Linux containers even
+# when the repo is checked out on Windows with core.autocrlf=true. A CRLF shebang
+# makes Docker fail with "exec .../docker-entrypoint.sh: no such file or directory".
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf

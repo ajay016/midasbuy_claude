@@ -36,7 +36,9 @@ COPY . .
 
 # Entrypoint starts a virtual X display, then execs the command below.
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Strip any CRLF (Windows checkout) so the shebang resolves, then make executable.
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # concurrency = parallel jobs (each slot drives its own browser, so keep small).

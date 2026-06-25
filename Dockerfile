@@ -39,7 +39,12 @@ COPY . .
 # execs the command below. Placed in /usr/local/bin so the `.:/app` dev mount
 # can't shadow it.
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Strip any CRLF (the repo may be checked out on Windows) so the shebang resolves,
+# then make it executable. Without the sed you get
+# "exec .../docker-entrypoint.sh: no such file or directory" because the kernel
+# looks for an interpreter named "/bin/sh\r".
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
