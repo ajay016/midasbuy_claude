@@ -179,6 +179,11 @@ MIDASBUY_LOGIN_BASE_URL = "https://www.midasbuy.com/midasbuy"
 MIDASBUY_ACCOUNT_CAP_PER_MIN = env.int("MIDASBUY_ACCOUNT_CAP_PER_MIN", default=20)
 MIDASBUY_ACCOUNT_FLAG_THRESHOLD = env.int("MIDASBUY_ACCOUNT_FLAG_THRESHOLD", default=5)
 MIDASBUY_ACCOUNT_FLAG_COOLDOWN = env.int("MIDASBUY_ACCOUNT_FLAG_COOLDOWN", default=600)
+# Scheduled bot-account re-login (celery beat). Every N hours, refresh each logged-in
+# account's session one at a time so cookies never silently expire. The relogin marker
+# self-expires after MIDASBUY_RELOGIN_MARKER_TTL seconds as a safety net.
+MIDASBUY_RELOGIN_INTERVAL_HOURS = env.int("MIDASBUY_RELOGIN_INTERVAL_HOURS", default=12)
+MIDASBUY_RELOGIN_MARKER_TTL = env.int("MIDASBUY_RELOGIN_MARKER_TTL", default=600)
 
 # Browser warm-up: on API startup, pre-build a cached browser session for every
 # logged-in account (per country below) so the first real request to each account

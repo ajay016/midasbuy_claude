@@ -71,3 +71,23 @@ services:
       - "host.docker.internal:host-gateway"
     # The image entrypoint starts the virtual X display; just run celery here.
     command: celery -A midasbuy_project worker -l info --concurrency=2
+
+  # Celery beat — fires the periodic schedule (e.g. account re-login every 12h).
+  # It only ENQUEUES tasks; the worker above runs them (and has the browser).
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: midasbuy_worker
+    container_name: midasbuy_beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A midasbuy_project beat -l info
