@@ -138,10 +138,17 @@ async def _select_session(metered: bool) -> tuple[int, str, str]:
     (account_id, storage_state_path, cookie_header) or raises 503."""
     from accounts.services.rotation import pick_account
 
+    t0 = time.perf_counter()
     acct, reason = await sync_to_async(pick_account)(metered)
+    t1 = time.perf_counter()
     if acct is None:
         raise HTTPException(status_code=503, detail=reason or "No account available.")
     ssp, cookies = await sync_to_async(_resolve_session_sync)(acct.id)
+    t2 = time.perf_counter()
+    # Splits the 'session' timing into account-pick vs session-resolve so a slow
+    # step (e.g. a blocking Redis or DB call) is obvious in the logs.
+    logger.info("[TIMING] pick_account=%.0fms resolve_session=%.0fms",
+                (t1 - t0) * 1000, (t2 - t1) * 1000)
     if not ssp:
         raise HTTPException(status_code=503,
                             detail="Selected account has no valid session. Log it in first.")

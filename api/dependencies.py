@@ -33,7 +33,13 @@ def _redis():
         import redis
         from django.conf import settings
 
-        _redis_client = redis.from_url(settings.CELERY_BROKER_URL)
+        # Short timeouts: a down/unreachable Redis should fail fast (fail-open for
+        # rate limiting, fail-closed for nonce) — never block the request.
+        _redis_client = redis.from_url(
+            settings.CELERY_BROKER_URL,
+            socket_connect_timeout=0.15,
+            socket_timeout=0.15,
+        )
     return _redis_client
 
 

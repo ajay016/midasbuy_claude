@@ -35,7 +35,13 @@ FLAG_COOLDOWN_SECONDS = getattr(settings, "MIDASBUY_ACCOUNT_FLAG_COOLDOWN", 10 *
 def _redis():
     import redis
 
-    return redis.from_url(settings.CELERY_BROKER_URL)
+    # Short timeouts so a DOWN/unreachable Redis fails in ~150ms instead of
+    # blocking the request for seconds on a TCP connect timeout.
+    return redis.from_url(
+        settings.CELERY_BROKER_URL,
+        socket_connect_timeout=0.15,
+        socket_timeout=0.15,
+    )
 
 
 def _minute() -> int:

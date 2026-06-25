@@ -95,13 +95,6 @@ else:
             "PASSWORD": env("DB_PASSWORD", default="postgres"),
             "HOST": env("DB_HOST", default="127.0.0.1"),
             "PORT": env("DB_PORT", default="5432"),
-            # Reuse DB connections across requests instead of opening a new one
-            # (TCP + auth handshake) for every query. The signed-API path makes
-            # several DB round-trips per call, so per-request reconnects were a
-            # major chunk of its latency. Health checks drop a stale connection
-            # before reuse so a recycled DB socket never causes a hard error.
-            "CONN_MAX_AGE": env.int("DB_CONN_MAX_AGE", default=60),
-            "CONN_HEALTH_CHECKS": True,
         }
     }
 
