@@ -2315,7 +2315,7 @@ def _save_debug(page, session_dir: str, name: str) -> None:
 #
 # Replaces the manual slider solve. Drives window.midas.newRiskControl(challenge)
 # headlessly, hooks window.TencentCaptcha in every frame to capture the slider's
-# success callback, solves the TCaptcha off-box via 2Captcha, fires the callback
+# success callback, solves the TCaptcha off-box via the captcha provider, fires the callback
 # with {ticket, randstr} inside the (cross-origin) harvestsharp slider frame —
 # the slider then submits to harvestsharp itself and newRiskControl resolves with
 # {rc_token, rc_uuid}, which the backend feeds into QueryRedeemCodeInfo.
