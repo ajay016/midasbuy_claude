@@ -390,6 +390,7 @@ async ({payloadJson, endpoint, method}) => {
         const bytes       = (hexResult.match(/../g) || []).map(h => parseInt(h, 16));
         const encrypt_msg = btoa(String.fromCharCode(...bytes));
 
+        const _fetchStart = performance.now();
         const resp = await fetch('https://www.midasbuy.com' + endpoint, {
             method:      method || 'POST',
             headers:     {'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*'},
@@ -398,6 +399,9 @@ async ({payloadJson, endpoint, method}) => {
         });
 
         const text = await resp.text();
+        // Pure upstream time: how long Midasbuy took to answer this account/IP.
+        // A large value here = server-side throttling (risk control), not our code.
+        const fetch_ms = Math.round(performance.now() - _fetchStart);
         let data;
         try { data = JSON.parse(text); }
         catch(e) {
@@ -429,6 +433,7 @@ async ({payloadJson, endpoint, method}) => {
             ok: true,
             status: resp.status,
             data,
+            fetch_ms,
             encrypt_msg_len: encrypt_msg.length,
             request_field_names: Object.keys(actualPayload).sort(),
             request_debug: endpoint.endsWith('/QueryRedeemCodeInfo') ? {
@@ -1715,6 +1720,7 @@ def _call_api_in_cached_browser(
     payload_json = json.dumps(payload, separators=(",", ":"))
 
     for attempt in (1, 2):
+        _t_acquire = time.perf_counter()
         try:
             session = _get_or_create_cached_session(storage_state_path, country_code, timeout_ms)
         except Exception:
@@ -1722,6 +1728,7 @@ def _call_api_in_cached_browser(
             return None
 
         with session.lock:
+            _t_locked = time.perf_counter()
             try:
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
                 result = session.page.evaluate(_JS_CALL_API, {
@@ -1730,6 +1737,17 @@ def _call_api_in_cached_browser(
                     "method":      method,
                 })
                 session.last_used = time.time()
+                # Split the time: acquiring/locking the cached session vs the actual
+                # in-browser evaluate; `fetch_ms` (from the JS) is the pure Midasbuy
+                # response time. If evaluate/fetch dominate, the delay is upstream
+                # throttling (risk control on this account/IP), not our code.
+                _now = time.perf_counter()
+                logger.info(
+                    "[TIMING] browser session_acquire=%.0fms evaluate=%.0fms midasbuy_fetch=%sms",
+                    (_t_locked - _t_acquire) * 1000,
+                    (_now - _t_locked) * 1000,
+                    result.get("fetch_ms") if isinstance(result, dict) else "?",
+                )
             except Exception:
                 logger.exception("[CRYPTO] cached page evaluate failed")
                 _discard_cached_session(session)
