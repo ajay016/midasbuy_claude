@@ -146,12 +146,13 @@ def pick_account(metered: bool = True):
         return accts[0], None
 
     if not metered:
-        # Spread lookups round-robin without cap enforcement.
-        try:
-            start = int(_redis().incr("acct:rr")) % len(accts)
-        except Exception:
-            start = 0
-        return accts[start], None
+        # Player lookups are read-only and uncapped. Do NOT round-robin them across
+        # every account: that spreads lookup traffic thin, so each account's warm
+        # browser session sits idle longer between hits and goes cold — and the
+        # lookup that lands on a cold session pays a slow re-warm. That's exactly
+        # why adding more accounts made lookups SLOWER, not faster. Pin lookups to
+        # ONE stable account so its session stays hot regardless of account count.
+        return accts[0], None
 
     # Metered: round-robin, skipping accounts at their per-minute cap.
     try:
