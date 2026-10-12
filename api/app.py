@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -17,6 +18,7 @@ from .dependencies import charge, require_order
 from .schemas import (
     CodeActionRequest,
     CodeActionResponse,
+    PlayerInfo,
     PlayerLookupResponse,
     RedeemRequest,
     RedeemResponse,
@@ -163,10 +165,75 @@ def _result_ok(result) -> bool:
     return bool(getattr(result, "success", False))
 
 
+# Outcomes caused by the user's input, not by the bot account. They must not count
+# toward flagging an account — otherwise a few mistyped player IDs or used codes
+# sideline a perfectly healthy account.
+_USER_ERROR_CODES = {
+    "REDEEM_CODE_ALREADY_USED",
+    "INVALID_REDEEM_CODE",
+    "PLAYER_NOT_FOUND",
+}
+_USER_ERROR_STATUSES = {"player_not_found", "used", "invalid"}
+
+
+def _is_user_error(result) -> bool:
+    if isinstance(result, dict):
+        return result.get("status") in _USER_ERROR_STATUSES
+    raw = getattr(result, "raw", None)
+    if isinstance(raw, dict):
+        verify = raw.get("verify") if isinstance(raw.get("verify"), dict) else {}
+        return (raw.get("err_code") or verify.get("err_code")) in _USER_ERROR_CODES
+    # Player lookup: Midasbuy answered (ret != 0, e.g. unknown player) vs. we got
+    # no usable answer at all (session/encryption/timeout -> account-side).
+    error = getattr(result, "error", None) or ""
+    return bool(error) and not error.startswith(("API request failed", "No session",
+                                                 "Midasbuy did not respond"))
+
+
 async def _report(account_id: int | None, result) -> None:
     from accounts.services.rotation import report_result
 
-    await sync_to_async(report_result)(account_id, _result_ok(result))
+    ok = _result_ok(result)
+    if not ok and _is_user_error(result):
+        return  # neutral: says nothing about the account's health
+    await sync_to_async(report_result)(account_id, ok)
+
+
+# ── Player lookup cache ────────────────────────────────────────────────────────
+# Midasbuy's own page never re-queries a player it already resolved; we did on
+# every lookup. Cache successful lookups briefly so repeats are instant and send
+# Midasbuy fewer requests. Display-only: the redeem path still verifies the player
+# on the exact browser page that will place the order.
+def _lookup_cache_key(country_code: str, player_id: str) -> str:
+    return f"lookup:{country_code.lower()}:{player_id}"
+
+
+def _lookup_cache_get(country_code: str, player_id: str):
+    from django.conf import settings
+
+    from .dependencies import _redis
+
+    if not getattr(settings, "MIDASBUY_LOOKUP_CACHE_TTL", 0):
+        return None
+    try:
+        raw = _redis().get(_lookup_cache_key(country_code, player_id))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None  # Redis down -> just do the real lookup
+
+
+def _lookup_cache_set(country_code: str, player_id: str, player: dict) -> None:
+    from django.conf import settings
+
+    from .dependencies import _redis
+
+    ttl = int(getattr(settings, "MIDASBUY_LOOKUP_CACHE_TTL", 0) or 0)
+    if ttl <= 0:
+        return
+    try:
+        _redis().set(_lookup_cache_key(country_code, player_id), json.dumps(player), ex=ttl)
+    except Exception:
+        pass
 
 
 # ── Browser warm-up ────────────────────────────────────────────────────────────
@@ -254,6 +321,11 @@ async def player_info(
     t = _Timer(request)
     await charge(identity, 1)  # player lookup: per request
     t.mark("charge")
+    cached = await sync_to_async(_lookup_cache_get)(country_code, player_id)
+    if cached:
+        t.mark("cache")
+        return PlayerLookupResponse(success=True, player=PlayerInfo(**cached),
+                                    timings=t.finish())
     account_id, ssp, cookies = await _select_session(metered=False)
     t.mark("session")
     result = await get_player_info(player_id, country_code, ssp, cookies)
@@ -261,6 +333,7 @@ async def player_info(
     await _report(account_id, result)
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
+    await sync_to_async(_lookup_cache_set)(country_code, player_id, result.player.model_dump())
     result.timings = t.finish()
     return result
 

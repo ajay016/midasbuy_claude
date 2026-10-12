@@ -221,6 +221,41 @@ async def get_player_info(
     )
 
 
+async def _ensure_player_verified(
+    player_id: str,
+    country_code: str,
+    storage_state_path: str,
+    cookies: Optional[str],
+) -> Optional[str]:
+    """Make sure THIS account's cached page has verified ``player_id`` via
+    /getCharac before a code query or order runs on it. The panel looks players up
+    on one account but redeems on whichever account rotation picks, and the
+    in-page order code identifies the player from that page's verified list.
+    Skips the round-trip when the page already verified the player.
+    Returns None when verified, else a failed RedeemResponse to return as-is."""
+    from accounts.services.playwright_crypto import session_has_verified_player
+
+    already = await _run_browser_call(
+        session_has_verified_player, storage_state_path, country_code, player_id,
+        session_key=storage_state_path,
+    )
+    if already:
+        return None
+    info = await get_player_info(player_id, country_code, storage_state_path, cookies)
+    if info.success:
+        return None
+    message = info.error or "Invalid player id."
+    # Only a real Midasbuy "no such player" answer is the user's fault; no answer
+    # at all (timeout / session problem) is on our side.
+    account_side = message.startswith(("API request failed", "No session",
+                                       "Midasbuy did not respond"))
+    return RedeemResponse(
+        success=False,
+        message=message,
+        raw={"err_code": "PLAYER_LOOKUP_FAILED" if account_side else "PLAYER_NOT_FOUND"},
+    )
+
+
 # ── Redeem code info ──────────────────────────────────────────────────────────
 
 def _redeem_query_error_message(data: dict) -> str:
@@ -386,6 +421,12 @@ async def query_code_info(
     if not storage_state_path:
         return RedeemResponse(success=False, message="No session.")
 
+    not_verified = await _ensure_player_verified(
+        player_id, country_code, storage_state_path, cookies,
+    )
+    if not_verified:
+        return not_verified
+
     clean_code = "".join(pin_code.split())
     payload = {
         "redeem_code": clean_code,
@@ -480,6 +521,12 @@ async def submit_redeem(
     product_id: Optional[str] = None,
 ) -> RedeemResponse:
     if confirm:
+        not_verified = await _ensure_player_verified(
+            player_id, country_code, storage_state_path, cookies,
+        )
+        if not_verified:
+            return not_verified
+
         logger.info("[REDEEM] submitting final redeem order through Midasbuy SDK")
         from accounts.services.playwright_crypto import call_redeem_order_in_browser
 
@@ -515,6 +562,16 @@ async def submit_redeem(
             return RedeemResponse(
                 success=True,
                 message=message,
+                raw={"result": result_data},
+            )
+
+        if isinstance(result_data, dict) and result_data.get("error") == "player_not_verified_on_session":
+            # The page lost its verified player (e.g. rebuilt mid-flow). No order was
+            # placed, so this is safe to retry — never re-query as if it ran.
+            logger.warning("[REDEEM] order refused: player not verified on this page")
+            return RedeemResponse(
+                success=False,
+                message="Player verification expired on this session. Please confirm again.",
                 raw={"result": result_data},
             )
 

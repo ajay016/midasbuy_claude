@@ -46,10 +46,19 @@ class _CachedBrowserSession:
     created_at: float
     last_used: float
     lock: Lock = field(default_factory=Lock)
+    # Player IDs this page has verified via /getCharac (mirrors the page's
+    # sessionStorage 'midasbuy_backend_verified_players'). A rebuilt page starts
+    # empty, so the redeem path re-verifies on the page that will place the order.
+    verified_players: set = field(default_factory=set)
 
 
 _SESSION_CACHE: Dict[Tuple[str, str, int], _CachedBrowserSession] = {}
 _SESSION_CACHE_LOCK = Lock()
+# Abort the in-page Midasbuy fetch after this long. Midasbuy normally answers in
+# 0.3-0.9s; without a cap a stalled call held the account's only browser thread
+# (and every request queued behind it) indefinitely.
+_UPSTREAM_FETCH_TIMEOUT_MS = int(os.getenv("MIDASBUY_UPSTREAM_TIMEOUT_MS", "10000"))
+
 _CACHED_ENDPOINTS = {
     "/interface/getCharac",
     "/interface/shelfProto/shelves_svr/QueryRedeemCodeInfo",
@@ -180,7 +189,7 @@ _STEALTH_JS = """
 # ── JS evaluated inside the page ──────────────────────────────────────────────
 
 _JS_CALL_API = """
-async ({payloadJson, endpoint, method}) => {
+async ({payloadJson, endpoint, method, fetchTimeoutMs}) => {
     try {
         // Wait for xMidasToken (up to 15s)
         let tokenWait = 0;
@@ -244,10 +253,12 @@ async ({payloadJson, endpoint, method}) => {
         } catch(e) {}
         if (endpoint.endsWith('/QueryRedeemCodeInfo')) {
             verifiedPlayer = verifiedPlayers[actualPayload.open_id] || null;
-            if (verifiedPlayer) {
-                Object.assign(payInfo, verifiedPlayer);
-                verifiedPlayerApplied = true;
+            // Never fall back to whatever player this page saw last.
+            if (!verifiedPlayer || !verifiedPlayer.openid) {
+                return {error: 'player_not_verified_on_session', player_id: actualPayload.open_id};
             }
+            Object.assign(payInfo, verifiedPlayer);
+            verifiedPlayerApplied = true;
         }
 
         const deviceMatch = document.cookie.match(/midasbuyDeviceId=([^;]*)/);
@@ -391,14 +402,26 @@ async ({payloadJson, endpoint, method}) => {
         const encrypt_msg = btoa(String.fromCharCode(...bytes));
 
         const _fetchStart = performance.now();
-        const resp = await fetch('https://www.midasbuy.com' + endpoint, {
-            method:      method || 'POST',
-            headers:     {'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*'},
-            body:        JSON.stringify({encrypt_msg, ctoken_ver, ctoken}),
-            credentials: 'include',
-        });
-
-        const text = await resp.text();
+        const _abort = new AbortController();
+        const _abortTimer = setTimeout(() => _abort.abort(), fetchTimeoutMs || 10000);
+        let resp, text;
+        try {
+            resp = await fetch('https://www.midasbuy.com' + endpoint, {
+                method:      method || 'POST',
+                headers:     {'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*'},
+                body:        JSON.stringify({encrypt_msg, ctoken_ver, ctoken}),
+                credentials: 'include',
+                signal:      _abort.signal,
+            });
+            text = await resp.text();
+        } catch(e) {
+            if (e && e.name === 'AbortError') {
+                return {error: 'upstream_timeout', fetch_ms: Math.round(performance.now() - _fetchStart)};
+            }
+            throw e;
+        } finally {
+            clearTimeout(_abortTimer);
+        }
         // Pure upstream time: how long Midasbuy took to answer this account/IP.
         // A large value here = server-side throttling (risk control), not our code.
         const fetch_ms = Math.round(performance.now() - _fetchStart);
@@ -902,7 +925,10 @@ async ({payloadJson, sdkScript}) => {
         const payInfo = sd.payInfo;
         const playerId = String(input.player_id || '');
         const verifiedPlayer = verifiedPlayers[playerId] || {};
-        if (verifiedPlayer.openid) Object.assign(payInfo, verifiedPlayer);
+        // Refuse to order for a player this page never verified — otherwise the
+        // openid below falls back to the page's last/bound player (wrong player).
+        if (!verifiedPlayer.openid) return {error: 'player_not_verified_on_session', player_id: playerId};
+        Object.assign(payInfo, verifiedPlayer);
 
         const ri = window.__Report_INFO || {};
         const rp = sd.reportParams || {};
@@ -1125,6 +1151,15 @@ def _setup_chaos_vm_protection(page) -> None:
     """
     def handle_route(route):
         try:
+            # Only substitute the exact VM file we vendored. If Midasbuy ships a new
+            # VM under a new name, serving our old copy in its place would silently
+            # break encryption — load the real new file from the CDN instead.
+            requested = urlparse(route.request.url).path.rsplit("/", 1)[-1]
+            if requested != os.path.basename(_CHAOS_VM_LOCAL_PATH):
+                raise FileNotFoundError(
+                    f"Midasbuy now serves a different chaos VM ({requested[:40]}...); "
+                    "update accounts/services/assets/"
+                )
             with open(_CHAOS_VM_LOCAL_PATH, "rb") as f:
                 original = f.read()
             route.fulfill(
@@ -1526,20 +1561,43 @@ def _get_or_create_cached_session(
     key = _session_cache_key(storage_state_path, country_code)
     storage_mtime = _storage_mtime(os.path.abspath(storage_state_path))
 
+    # The global lock only guards the dict. Building a session (launch Chromium +
+    # load the page, 10-60s) happens OUTSIDE it, so one account's cold start or
+    # post-relogin rebuild never stalls every other account's lookups. The key
+    # includes the thread id and each account has its own single thread, so two
+    # builds for the same key can't race.
     with _SESSION_CACHE_LOCK:
         session = _SESSION_CACHE.get(key)
         if session and _session_is_usable(session, storage_mtime):
             session.last_used = time.time()
             logger.info("[CRYPTO] reusing cached browser session")
             return session
-
         if session:
             _SESSION_CACHE.pop(key, None)
-            _close_cached_session(session)
 
-        session = _create_cached_session(storage_state_path, country_code, timeout_ms)
+    if session:
+        _close_cached_session(session)
+
+    session = _create_cached_session(storage_state_path, country_code, timeout_ms)
+    with _SESSION_CACHE_LOCK:
         _SESSION_CACHE[key] = session
-        return session
+    return session
+
+
+def session_has_verified_player(
+    storage_state_path: str,
+    country_code: str,
+    player_id: str,
+) -> bool:
+    """True if this thread's live cached page for (account, country) has already
+    verified ``player_id`` via /getCharac. Must run on the account's browser thread."""
+    key = _session_cache_key(storage_state_path, country_code)
+    storage_mtime = _storage_mtime(os.path.abspath(storage_state_path))
+    with _SESSION_CACHE_LOCK:
+        session = _SESSION_CACHE.get(key)
+    if not session or not _session_is_usable(session, storage_mtime):
+        return False
+    return str(player_id) in session.verified_players
 
 
 def warm_cached_session(
@@ -1671,6 +1729,18 @@ def _extract_browser_result(result: Optional[dict], endpoint: str) -> Optional[d
         logger.error("[CRYPTO] evaluate returned None")
         return None
 
+    # Errors with a clear user-facing meaning become a normal Midasbuy-shaped
+    # failure (ret != 0) so callers show the message instead of "API request failed".
+    if result.get("error") == "upstream_timeout":
+        logger.warning("[CRYPTO] Midasbuy did not respond within %sms endpoint=%s",
+                       result.get("fetch_ms"), endpoint)
+        return {"ret": -1, "err_code": "UPSTREAM_TIMEOUT",
+                "msg": "Midasbuy did not respond in time. Please retry."}
+    if result.get("error") == "player_not_verified_on_session":
+        logger.warning("[CRYPTO] player not verified on this page endpoint=%s", endpoint)
+        return {"ret": -1, "err_code": "PLAYER_NOT_VERIFIED",
+                "msg": "Player was not verified on this session. Please retry."}
+
     if result.get("error"):
         logger.error(
             "[CRYPTO] fetch failed  endpoint=%s  error=%s  status=%s  encrypt_msg_len=%s  midasKeys=%s",
@@ -1732,9 +1802,10 @@ def _call_api_in_cached_browser(
             try:
                 logger.info("[CRYPTO] cached in-browser fetch endpoint=%s attempt=%d", endpoint, attempt)
                 result = session.page.evaluate(_JS_CALL_API, {
-                    "payloadJson": payload_json,
-                    "endpoint":    endpoint,
-                    "method":      method,
+                    "payloadJson":    payload_json,
+                    "endpoint":       endpoint,
+                    "method":         method,
+                    "fetchTimeoutMs": _UPSTREAM_FETCH_TIMEOUT_MS,
                 })
                 session.last_used = time.time()
                 # Split the time: acquiring/locking the cached session vs the actual
@@ -1766,7 +1837,15 @@ def _call_api_in_cached_browser(
                 if attempt == 1:
                     continue
 
-            return _extract_browser_result(result, endpoint)
+            data = _extract_browser_result(result, endpoint)
+            if (
+                endpoint.rstrip("/").endswith("/getCharac")
+                and isinstance(data, dict)
+                and data.get("ret") == 0
+                and data.get("info")
+            ):
+                session.verified_players.add(str(payload.get("openid") or ""))
+            return data
 
     return None
 
