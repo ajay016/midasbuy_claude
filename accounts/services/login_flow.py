@@ -194,6 +194,11 @@ def click_dropdown_sign_in(page) -> bool:
         ("sidebar pattern", lambda: page.locator("div[class*='ulContent'] div[class*='btn_wrap']").filter(visible=True).first),
     ]
     for name, make in strategies:
+        # A previous click may have opened the dialog slowly (Docker/Xvfb is much
+        # slower than a desktop browser); its full-screen iframe then blocks clicks.
+        if _login_dialog_opened(page, timeout_ms=500):
+            logger.info("[MIDASBUY] login dialog already open")
+            return True
         try:
             target = make()
             target.wait_for(state="visible", timeout=2000)
@@ -201,7 +206,7 @@ def click_dropdown_sign_in(page) -> bool:
         except Exception as e:
             logger.info("[MIDASBUY] dropdown '%s' click failed: %s", name, str(e)[:200])
             continue
-        if _login_dialog_opened(page, timeout_ms=6000):
+        if _login_dialog_opened(page, timeout_ms=15000):
             logger.info("[MIDASBUY] login dialog opened via dropdown '%s'", name)
             return True
         logger.warning("[MIDASBUY] dropdown '%s' clicked but login dialog did not open", name)
