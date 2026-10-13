@@ -14,6 +14,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, current_thread
 from typing import Optional
+from urllib.parse import unquote
 
 from .schemas import PlayerInfo, PlayerLookupResponse, RedeemResponse
 
@@ -213,7 +214,8 @@ async def get_player_info(
         success=True,
         player=PlayerInfo(
             player_id=player_id,
-            username=info.get("charac_name") or "",
+            # Midasbuy URL-encodes non-ASCII names (e.g. "erro%E7%88%B6...").
+            username=unquote(info.get("charac_name") or ""),
             role_id=str(info.get("openid") or player_id),
             server_id="",
             zone_id=str(info.get("zoneid") or ""),

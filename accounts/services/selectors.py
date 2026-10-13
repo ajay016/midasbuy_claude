@@ -2,8 +2,10 @@ MIDASBUY_OPTIONAL_MODAL_CLOSE = 'div[data-id="f27e6632522d4187ad499b611ed22082"]
 MIDASBUY_OPTIONAL_MODAL_CLOSE_ALT = 'div.MidasbuyUI-close_btn_a9e1c8'
 MIDASBUY_COOKIE_POPUP = 'div[data-component-id="cookie"]'
 MIDASBUY_COOKIE_ACCEPT = 'div[data-component-id="cookie"] div[data-id="accept"]'
-MIDASBUY_NAV_SIGN_IN = 'div[data-id="login"].MidasbuyUI-sign_in_52f7d9'
-MIDASBUY_DROPDOWN_SIGN_IN = 'div.MidasbuyUI-ulContent_fd607a div.MidasbuyUI-btn_wrap_8f8f09[data-id="login"]'
+# Hashed class suffixes (e.g. sign_in_52f7d9 -> sign_in_d2aa02) change on every
+# Midasbuy redeploy; match on stable attributes + class prefixes instead.
+MIDASBUY_NAV_SIGN_IN = 'div[data-id="login"][class*="sign_in"]'
+MIDASBUY_DROPDOWN_SIGN_IN = 'div[class*="ulContent"] div[class*="btn_wrap"][data-id="login"]'
 MIDASBUY_LOGIN_IFRAME = 'iframe#login-iframe'
 MIDASBUY_EMAIL_INPUT = 'input[type="email"][autocomplete="username"]'
 MIDASBUY_CONTINUE_BUTTON = 'div.btn.comfirm-btn'
@@ -13,3 +15,6 @@ MIDASBUY_SIGN_IN_BUTTON = 'div.btn-wrap.btn-wraps div.btn.comfirm-btn:has-text("
 MIDASBUY_SIGN_IN_SUCCESS_TEXT = 'p.icon_text'
 MIDASBUY_SUCCESS_CLOSE_BUTTON = 'div.pop-mode div.close-btn'
 MIDASBUY_NAV_SIGN_IN_FALLBACK = 'div[data-id="login"]'
+# Signed-in header: shows the account email; the Sign in button is gone.
+MIDASBUY_HEADER = '[data-component-id="header"]'
+MIDASBUY_HEADER_USER_NAME = '[data-component-id="header"] [class*="user_name"]'

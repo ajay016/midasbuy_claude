@@ -3,9 +3,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _first_visible(page_or_frame, selector: str):
+    """First VISIBLE match. Plain ``.first`` picks the first match in DOM order,
+    which on Midasbuy is often a hidden popup (the login iframe keeps several
+    hidden ``div.close-btn`` / ``p.icon_text`` popups mounted), so waiting on it
+    timed out even though a visible match existed."""
+    return page_or_frame.locator(selector).filter(visible=True).first
+
+
 def click_if_visible(page_or_frame, selector: str, timeout: int = 500) -> bool:
     try:
-        locator = page_or_frame.locator(selector).first
+        locator = _first_visible(page_or_frame, selector)
         locator.wait_for(state="visible", timeout=timeout)
         locator.click(timeout=timeout)
         return True
@@ -15,7 +23,7 @@ def click_if_visible(page_or_frame, selector: str, timeout: int = 500) -> bool:
 
 def fill_input(page_or_frame, selector: str, value: str, timeout: int = 500) -> bool:
     try:
-        locator = page_or_frame.locator(selector).first
+        locator = _first_visible(page_or_frame, selector)
         locator.wait_for(state="visible", timeout=timeout)
         locator.click(timeout=timeout)
         locator.fill(value, timeout=timeout)
@@ -81,7 +89,7 @@ def get_iframe_by_selector(page, selector: str, timeout: int = 5000):
 
 def text_contains(page_or_frame, selector: str, text: str, timeout: int = 3000) -> bool:
     try:
-        locator = page_or_frame.locator(selector).first
+        locator = _first_visible(page_or_frame, selector)
         locator.wait_for(state="visible", timeout=timeout)
         content = locator.text_content(timeout=timeout) or ""
         return text in content
@@ -91,7 +99,7 @@ def text_contains(page_or_frame, selector: str, text: str, timeout: int = 3000) 
 
 def wait_for_visible(page_or_frame, selector: str, timeout: int = 5000) -> bool:
     try:
-        page_or_frame.locator(selector).first.wait_for(state="visible", timeout=timeout)
+        _first_visible(page_or_frame, selector).wait_for(state="visible", timeout=timeout)
         return True
     except Exception:
         return False

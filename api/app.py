@@ -97,10 +97,14 @@ def _resolve_session_sync(account_id: int) -> tuple[str | None, str | None]:
         logger.warning("[API] account_id=%s not found", account_id)
         return None, None
 
-    # Prefer the path stored by the login service; fall back to computed path
-    ssp = acct.storage_state_path or os.path.join(
-        acct.get_session_dir(str(settings.BASE_DIR)), "storage_state.json"
-    )
+    # Prefer the path stored by the login service; fall back to the computed path.
+    # The stored path is absolute for the machine that ran the login (e.g. a
+    # Windows "D:\...\midasbuy_sessions\..." path is useless inside the Linux
+    # container that mounts the same folder at /app), so fall back when missing.
+    computed = os.path.join(acct.get_session_dir(str(settings.BASE_DIR)), "storage_state.json")
+    ssp = acct.storage_state_path or computed
+    if not os.path.exists(ssp) and os.path.exists(computed):
+        ssp = computed
 
     if not ssp or not os.path.exists(ssp):
         logger.warning(
