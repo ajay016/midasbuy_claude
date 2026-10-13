@@ -26,6 +26,9 @@ DEBUG = env.bool("DEBUG", default=True)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])
 
 INSTALLED_APPS = [
+    # Must come before django.contrib.staticfiles so its `runserver` (which runs
+    # the full ASGI app incl. FastAPI /api via uvicorn) overrides Django's.
+    "devserver",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
