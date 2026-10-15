@@ -355,7 +355,7 @@ GROUPS = [
             },
             {
                 "id": "code-status", "method": "POST", "path": "/api/code-status", "auth": True,
-                "title": "Code status", "desc": "Is a code valid / used / invalid? Does NOT redeem.",
+                "title": "Code status", "desc": "Is a code valid / used / expired / invalid? Does NOT redeem.",
                 "params": [
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID the code belongs to"),
@@ -365,7 +365,7 @@ GROUPS = [
                             "player_id": "25849080551179560", "pin_code": "ABCD-EFGH-IJKL"},
                 "response": {"success": True, "status": "valid", "message": "Redeem code is valid.",
                              "username": "ProGamer", "product_name": "60 UC"},
-                "status_values": "player_not_found · invalid · used · valid",
+                "status_values": "player_not_found · invalid · used · expired · valid",
             },
             {
                 "id": "redeem-now", "method": "POST", "path": "/api/redeem-now", "auth": True,
@@ -381,7 +381,7 @@ GROUPS = [
                 "response": {"success": True, "status": "redeemed",
                              "message": "Redeemed successfully.", "username": "ProGamer",
                              "product_name": "60 UC"},
-                "status_values": "player_not_found · invalid · used · redeemed · failed",
+                "status_values": "player_not_found · invalid · used · expired · redeemed · failed",
             },
         ],
     },

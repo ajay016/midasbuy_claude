@@ -658,12 +658,16 @@ async def submit_redeem(
 
 # ── All-in-one helpers (single source of truth for single + bulk) ──────────────
 def _code_status_from_query(check: RedeemResponse) -> str:
-    """Map a (confirm=False) query result to valid | used | invalid."""
+    """Map a (confirm=False) query result to valid | used | expired | invalid."""
     if check.confirmation_required:
         return "valid"
     raw = check.raw or {}
     err = str(raw.get("err_code") or "")
-    return "used" if err == "REDEEM_CODE_ALREADY_USED" else "invalid"
+    if err == "REDEEM_CODE_ALREADY_USED":
+        return "used"
+    if err == "REDEEM_CODE_EXPIRED":
+        return "expired"
+    return "invalid"
 
 
 async def check_code_status(
@@ -674,7 +678,7 @@ async def check_code_status(
     cookies: Optional[str],
     zone_id: str = "1",
 ) -> dict:
-    """Look the player up, then report whether the code is valid / used / invalid.
+    """Look the player up, then report whether the code is valid / used / expired / invalid.
     Does NOT redeem. Returns a normalised dict."""
     info = await get_player_info(player_id, country_code, storage_state_path, cookies)
     if not info.success or not info.player:
@@ -719,7 +723,7 @@ async def redeem_all_in_one(
         player_id, pin_code, country_code, storage_state_path, cookies, zid, confirm=False,
     )
     if not check.confirmation_required:
-        status = _code_status_from_query(check)  # used | invalid
+        status = _code_status_from_query(check)  # used | expired | invalid
         return {"success": False, "status": status, "message": check.message,
                 "username": username, "raw": check.raw or {}}
 

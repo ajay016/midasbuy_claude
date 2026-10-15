@@ -58,7 +58,7 @@ class CodeActionRequest(BaseModel):
 
 class CodeActionResponse(BaseModel):
     success: bool
-    status:  str = Field(..., description="player_not_found | invalid | used | valid | redeemed | failed")
+    status:  str = Field(..., description="player_not_found | invalid | used | expired | valid | redeemed | failed")
     message: str
     username:     str = ""
     product_name: str = ""

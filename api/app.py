@@ -178,7 +178,7 @@ _USER_ERROR_CODES = {
     "INVALID_REDEEM_CODE",
     "PLAYER_NOT_FOUND",
 }
-_USER_ERROR_STATUSES = {"player_not_found", "used", "invalid"}
+_USER_ERROR_STATUSES = {"player_not_found", "used", "expired", "invalid"}
 
 
 def _is_user_error(result) -> bool:
@@ -345,7 +345,7 @@ async def player_info(
 
 @api_app.post("/code-status", response_model=CodeActionResponse, tags=["single"])
 async def code_status(body: CodeActionRequest, identity: dict = Depends(require_order)):
-    """Check one code for one player: valid / used / invalid. Does NOT redeem."""
+    """Check one code for one player: valid / used / expired / invalid. Does NOT redeem."""
     await charge(identity, 1)
     account_id, ssp, cookies = await _select_session(metered=True)
     result = await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
