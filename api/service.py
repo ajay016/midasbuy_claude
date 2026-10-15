@@ -280,6 +280,7 @@ def _redeem_query_error_message(data: dict) -> str:
     messages = {
         "REDEEM_CODE_ALREADY_USED": "Redeem code is already used. Please check the code.",
         "INVALID_REDEEM_CODE": "Invalid redeem code. Please check the code.",
+        "REDEEM_CODE_EXPIRED": "Redeem code has expired. Please check the code.",
         "QUERY_TOB_REDEEM_CODE_BUSINESS_ERROR": (
             "Midasbuy redeem-code service is busy right now. Please try again later."
         ),

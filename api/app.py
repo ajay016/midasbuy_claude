@@ -174,6 +174,7 @@ def _result_ok(result) -> bool:
 # sideline a perfectly healthy account.
 _USER_ERROR_CODES = {
     "REDEEM_CODE_ALREADY_USED",
+    "REDEEM_CODE_EXPIRED",
     "INVALID_REDEEM_CODE",
     "PLAYER_NOT_FOUND",
 }
