@@ -424,8 +424,12 @@ def _record_two_step(identity: dict, body: RedeemRequest, result) -> None:
         if body.confirm:
             if result.success:
                 order = (raw.get("result") or {}).get("order_no") or ""
+                # The panel doesn't resend the player's name on confirm; it was
+                # cached by the lookup that preceded this redeem.
+                cached = _lookup_cache_get(body.country_code or "bd", body.player_id) or {}
                 cs.record_redemption(body.pin_code, actor=viewer, source=source,
                                      player_id=body.player_id,
+                                     username=cached.get("username", ""),
                                      product_name=body.product_name or "", order_no=order)
             else:
                 cs.record_redeem_failure(body.pin_code, actor=viewer, source=source,
