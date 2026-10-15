@@ -71,7 +71,12 @@ def process_player_info(player_id: str, country_code: str, ssp: str, cookies: st
             "zone_id": res.player.zone_id or "",
             "raw": res.player.model_dump(),
         }
-    return {"success": False, "message": res.error or "Player not found.", "raw": {}}
+    from api.service import _ACCOUNT_SIDE_ERRORS
+
+    message = res.error or "Player not found."
+    # Midasbuy answered "no such player" (user input) vs. no usable answer (account).
+    status = "lookup_failed" if message.startswith(_ACCOUNT_SIDE_ERRORS) else "player_not_found"
+    return {"success": False, "status": status, "message": message, "raw": {}}
 
 
 def process_validate(player_id: str, pin_code: str, country_code: str,

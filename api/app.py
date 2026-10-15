@@ -23,7 +23,13 @@ from .schemas import (
     RedeemRequest,
     RedeemResponse,
 )
-from .service import check_code_status, get_player_info, redeem_all_in_one, submit_redeem
+from .service import (
+    check_code_status,
+    get_player_info,
+    is_user_error,
+    redeem_all_in_one,
+    submit_redeem,
+)
 
 logger = logging.getLogger(__name__)
 api_app = FastAPI(title="Midasbuy Redeem API", version="2.0.0")
@@ -169,37 +175,11 @@ def _result_ok(result) -> bool:
     return bool(getattr(result, "success", False))
 
 
-# Outcomes caused by the user's input, not by the bot account. They must not count
-# toward flagging an account — otherwise a few mistyped player IDs or used codes
-# sideline a perfectly healthy account.
-_USER_ERROR_CODES = {
-    "REDEEM_CODE_ALREADY_USED",
-    "REDEEM_CODE_EXPIRED",
-    "INVALID_REDEEM_CODE",
-    "PLAYER_NOT_FOUND",
-}
-_USER_ERROR_STATUSES = {"player_not_found", "used", "expired", "invalid"}
-
-
-def _is_user_error(result) -> bool:
-    if isinstance(result, dict):
-        return result.get("status") in _USER_ERROR_STATUSES
-    raw = getattr(result, "raw", None)
-    if isinstance(raw, dict):
-        verify = raw.get("verify") if isinstance(raw.get("verify"), dict) else {}
-        return (raw.get("err_code") or verify.get("err_code")) in _USER_ERROR_CODES
-    # Player lookup: Midasbuy answered (ret != 0, e.g. unknown player) vs. we got
-    # no usable answer at all (session/encryption/timeout -> account-side).
-    error = getattr(result, "error", None) or ""
-    return bool(error) and not error.startswith(("API request failed", "No session",
-                                                 "Midasbuy did not respond"))
-
-
 async def _report(account_id: int | None, result) -> None:
     from accounts.services.rotation import report_result
 
     ok = _result_ok(result)
-    if not ok and _is_user_error(result):
+    if not ok and is_user_error(result):
         return  # neutral: says nothing about the account's health
     await sync_to_async(report_result)(account_id, ok)
 

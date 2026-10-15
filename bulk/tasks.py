@@ -134,7 +134,12 @@ def _process_item(job: BulkJob, item: BulkJobItem):
             break
 
     if account_id is not None:
-        report_result(account_id, bool(out.get("success")))
+        from api.service import is_user_error
+
+        # Used / expired / invalid codes and unknown players say nothing about the
+        # bot account's health; counting them benched healthy accounts.
+        if out.get("success") or not is_user_error(out):
+            report_result(account_id, bool(out.get("success")))
 
     item.success = bool(out.get("success"))
     item.status = ItemStatus.SUCCESS if item.success else ItemStatus.FAILED

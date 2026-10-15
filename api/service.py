@@ -656,6 +656,37 @@ async def submit_redeem(
     )
 
 
+# Outcomes caused by the user's input, not by the bot account. They must not count
+# toward flagging an account — otherwise a few mistyped player IDs or used codes
+# sideline a perfectly healthy account.
+_USER_ERROR_CODES = {
+    "REDEEM_CODE_ALREADY_USED",
+    "REDEEM_CODE_EXPIRED",
+    "INVALID_REDEEM_CODE",
+    "PLAYER_NOT_FOUND",
+}
+_USER_ERROR_STATUSES = {"player_not_found", "used", "expired", "invalid"}
+
+
+_ACCOUNT_SIDE_ERRORS = ("API request failed", "No session", "Midasbuy did not respond")
+
+
+def is_user_error(result) -> bool:
+    """True when a failed result was caused by the user's input (unknown player,
+    used / expired / invalid code), so it must not count against the bot account.
+    Shared by the API endpoints and bulk jobs."""
+    if isinstance(result, dict):
+        return result.get("status") in _USER_ERROR_STATUSES
+    raw = getattr(result, "raw", None)
+    if isinstance(raw, dict):
+        verify = raw.get("verify") if isinstance(raw.get("verify"), dict) else {}
+        return (raw.get("err_code") or verify.get("err_code")) in _USER_ERROR_CODES
+    # Player lookup: Midasbuy answered (ret != 0, e.g. unknown player) vs. we got
+    # no usable answer at all (session/encryption/timeout -> account-side).
+    error = getattr(result, "error", None) or ""
+    return bool(error) and not error.startswith(_ACCOUNT_SIDE_ERRORS)
+
+
 # ── All-in-one helpers (single source of truth for single + bulk) ──────────────
 def _code_status_from_query(check: RedeemResponse) -> str:
     """Map a (confirm=False) query result to valid | used | expired | invalid."""

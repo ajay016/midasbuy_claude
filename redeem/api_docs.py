@@ -437,7 +437,9 @@ GROUPS = [
             {
                 "id": "bulk-job", "method": "GET", "path": "/api/bulk/jobs/{job_id}", "auth": True,
                 "path_example": 44,
-                "title": "Poll a job", "desc": "Status + a valid/invalid split + every item.",
+                "title": "Poll a job", "desc": "Status + a valid/invalid split + every item. "
+                        "`invalid` holds every item that did not succeed (used, expired "
+                        "or wrong code, unknown player, or an error); its `message` says why.",
                 "params": [("job_id", "path · int", "Job id returned by a bulk call")],
                 "response": {
                     "job_id": 44, "status": "completed", "total_items": 2,
