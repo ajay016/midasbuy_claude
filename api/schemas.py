@@ -46,6 +46,8 @@ class RedeemResponse(BaseModel):
     challenge_url:         str | None = None
     risk_sdk_url:          str | None = None
     account_id:            int | None = None  # server-assigned; echo back to confirm
+    # For a used code our app redeemed: the player it went to (only if you may see it).
+    redeemed_to:           dict | None = None
     raw:                   dict | None = None
 
 
@@ -62,4 +64,6 @@ class CodeActionResponse(BaseModel):
     message: str
     username:     str = ""
     product_name: str = ""
+    # For a used code our app redeemed: the player it went to (only if you may see it).
+    redeemed_to:  dict | None = None
     raw:          dict | None = None

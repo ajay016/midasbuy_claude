@@ -6,6 +6,7 @@ redeem many codes). Each row to process is a BulkJobItem. The Celery worker
 updates these rows as it goes, so the API can report live progress and a full
 per-item result without keeping anything in memory.
 """
+from django.conf import settings
 from django.db import models
 
 
@@ -44,6 +45,12 @@ class BulkJob(models.Model):
         related_name="bulk_jobs",
     )
     country_code = models.CharField(max_length=8, default="bd")
+    # Who the job belongs to (the billing user). Only they, their partner, or an
+    # admin may read it. Null for jobs created before this field existed.
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="bulk_jobs",
+    )
 
     # Progress counters (denormalised so the status endpoint is a single row read).
     total_items = models.PositiveIntegerField(default=0)

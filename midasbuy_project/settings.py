@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "bulk",
     "apiauth",
     "billing",
+    "codes",
 ]
 
 MIDDLEWARE = [
@@ -210,3 +211,11 @@ MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=60)
 # Seconds a successful player lookup (player id -> name) is cached in Redis so
 # repeat lookups are instant and don't hit Midasbuy again. 0 disables the cache.
 MIDASBUY_LOOKUP_CACHE_TTL = env.int("MIDASBUY_LOOKUP_CACHE_TTL", default=600)
+
+# ── Code vault (docs/CODE_VAULT.md) ───────────────────────────────────────────
+# Player ID used to check a stored code's status when the caller doesn't give one
+# (Midasbuy's code check is always "for a player"). Blank = player_id required.
+MIDASBUY_CODE_CHECK_PLAYER_ID = env("MIDASBUY_CODE_CHECK_PLAYER_ID", default="")
+# Key for code fingerprints (HMAC). Changing it orphans existing fingerprints, so
+# set it once. Defaults to SECRET_KEY.
+CODE_FINGERPRINT_KEY = env("CODE_FINGERPRINT_KEY", default="") or SECRET_KEY

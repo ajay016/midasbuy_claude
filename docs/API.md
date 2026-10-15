@@ -12,6 +12,7 @@ Two families:
 |--------|-------|-----------|
 | **Single** (`/player-info`, `/code-status`, `/redeem-now`) | synchronous | one player / one code |
 | **Bulk** (`/bulk/*`) | asynchronous job | many players / many codes |
+| **Code vault** (`/codes/*`) | synchronous | store codes, then check / redeem / track them |
 
 Bulk endpoints create a **job** and return immediately. You get results two ways:
 - **polling** `GET /api/bulk/jobs/{id}` (used by the panel), or
@@ -30,14 +31,19 @@ Bulk endpoints create a **job** and return immediately. You get results two ways
 { "success": true, "player": { "player_id": "2584...", "username": "Name", "zone_id": "" } }
 ```
 
-### `POST /api/code-status` — is a code valid / used / invalid (no redeem)
+### `POST /api/code-status` — is a code valid / used / expired / invalid (no redeem)
 ```json
 // request
 { "account_id": 1, "country_code": "bd", "player_id": "2584...", "pin_code": "ABCD-EFGH-IJKL" }
 // response
 { "success": true, "status": "valid", "message": "...", "username": "Name", "product_name": "60 UC" }
 ```
-`status` ∈ `player_not_found | invalid | used | valid`.
+`status` ∈ `player_not_found | invalid | used | expired | valid`.
+
+For a **used** code that this service redeemed, the response also carries
+`redeemed_to` — `{player_id, username, product_name, redeemed_at}` — if you may see
+it (you redeemed it, it's in your vault, you're their partner, or you're an admin).
+Midasbuy never reveals this, so it's `null` for codes redeemed elsewhere.
 
 ### `POST /api/redeem-now` — all-in-one redeem
 Looks up the player → validates the code → redeems, in one call. Same request
@@ -46,10 +52,36 @@ body as `/code-status`.
 { "success": true, "status": "redeemed", "message": "Redeemed successfully.",
   "username": "Name", "product_name": "60 UC" }
 ```
-`status` ∈ `player_not_found | invalid | used | redeemed | failed`.
+`status` ∈ `player_not_found | invalid | used | expired | redeemed | failed`.
+`redeemed_to` as above.
 
 > `POST /api/redeem` also exists — the **two-step** (validate → confirm) flow the
 > panel uses. For programmatic use prefer `/redeem-now`.
+
+---
+
+## Code vault
+
+Store codes with us, then list them by status, check, redeem and see their history.
+Full design: [CODE_VAULT.md](CODE_VAULT.md). The panel page is **My Codes**.
+
+| Method & path | What | Cost |
+|---|---|---|
+| `POST /api/codes` | Store `{codes: [...], label?, country_code?}` (max 1000) | free |
+| `GET /api/codes` | List: `status` (`unused` = unchecked+valid), `search`, `client_ref`, `page`, `page_size` | free |
+| `GET /api/codes/{code_id}` | Full code + history | free |
+| `POST /api/codes/{code_id}/check` | Check on Midasbuy `{player_id?, country_code?}` | 1 |
+| `POST /api/codes/{code_id}/redeem` | Redeem to `{player_id, country_code?}`; 409 if used / in progress | 1 |
+| `POST /api/codes/lookup` | Anything we know about any code `{code}` (no Midasbuy call) | free |
+| `DELETE /api/codes/{code_id}` | Remove from the vault (history kept) | free |
+
+- The vault belongs to the **billed** user: the `X-Client-Id` client for signed calls,
+  the signed-in user in the panel. Partners also see their clients' codes; admins see all.
+- Codes are stored **encrypted**; lists show them masked (`••••Z8Z4`).
+- Stored code status ∈ `unchecked | valid | used | expired | invalid | redeeming`.
+- A check needs a player (Midasbuy checks per player). Without `player_id` the server
+  uses `MIDASBUY_CODE_CHECK_PLAYER_ID`; if that's unset → 400.
+- Anyone allowed to order may redeem any code, stored or not.
 
 ---
 
@@ -85,6 +117,9 @@ Same body as `/bulk/code-status`.
 
 ### `GET /api/bulk/jobs/{job_id}` — poll
 Returns the job plus a **valid / invalid split** and the full item list.
+Only the job's owner (the billed user/client), their partner, or an admin can read a
+job; anyone else gets 404. `invalid` holds every item that didn't succeed — the
+item's `message` says why (used, expired, wrong code, unknown player, error).
 ```json
 { "job_id": 42, "status": "completed",
   "total_items": 2, "succeeded_items": 1, "failed_items": 1, "progress_percent": 100,

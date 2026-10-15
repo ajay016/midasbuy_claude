@@ -8,6 +8,7 @@ the examples can never drift apart. Add an endpoint here and all four samples ar
 produced automatically.
 """
 import json
+import re
 
 HOST = "https://YOUR_HOST"
 
@@ -237,7 +238,7 @@ export async function signedRequest(method, path, { params, jsonBody } = {}) {
 def _signed_samples(ep: dict) -> dict:
     """Per-endpoint samples that call the signedRequest() helper from Client setup."""
     method = ep["method"].upper()
-    path = ep["path"].replace("{job_id}", str(ep.get("path_example", "42")))
+    path = re.sub(r"\{[a-z_]+\}", str(ep.get("path_example", "42")), ep["path"])
     body = ep.get("request")
     query = ep.get("query")
 
@@ -355,7 +356,7 @@ GROUPS = [
             },
             {
                 "id": "code-status", "method": "POST", "path": "/api/code-status", "auth": True,
-                "title": "Code status", "desc": "Is a code valid / used / expired / invalid? Does NOT redeem.",
+                "title": "Code status", "desc": "Is a code valid / used / expired / invalid? Does NOT redeem. A used code our app redeemed also returns redeemed_to (see Code vault).",
                 "params": [
                     ("country_code", "body · string", "Storefront code"),
                     ("player_id", "body · string", "Player UID the code belongs to"),
@@ -456,11 +457,129 @@ GROUPS = [
 ]
 
 
+# ── Code vault (shared with partner_api_docs.py) ───────────────────────────────
+_EX_CODE = {"id": 17, "code": "••••Z8Z4", "code_last4": "Z8Z4", "label": "Batch A",
+            "country_code": "bd", "status": "used", "product_name": "60 UC",
+            "checked_at": "2026-10-15T11:20:04Z",
+            "redeemed_to": {"player_id": "5421364032", "username": "ErrorSajal",
+                            "redeemed_at": "2026-10-15T11:20:04Z"},
+            "created_at": "2026-10-15T09:00:00Z"}
+
+CODE_VAULT_GROUP = {
+    "id": "codes",
+    "title": "Code vault",
+    "blurb": "Store your codes with us, then list them by status, check them, redeem them "
+             "and see each code's history. Codes are stored encrypted and listed masked "
+             "(last 4 characters); GET /api/codes/{code_id} returns the full code. The vault "
+             "belongs to the billed client (X-Client-Id). Partners see their own and their "
+             "clients' codes. Any code our app redeems is remembered, so a later check of a "
+             "used code includes redeemed_to (the player it went to) when you may see it. "
+             "Midasbuy itself never reveals that, so it only works for codes redeemed "
+             "through this service. Storing, listing and history are free; check and "
+             "redeem cost 1 request each.",
+    "endpoints": [
+        {
+            "id": "codes-store", "method": "POST", "path": "/api/codes", "auth": True,
+            "title": "Store codes", "desc": "Add up to 1000 codes. Duplicates are skipped.",
+            "params": [
+                ("codes", "body · string[]", "Codes to store"),
+                ("label", "body · string?", "Optional note"),
+                ("country_code", "body · string?", "Storefront (default bd)"),
+            ],
+            "request": {"codes": ["EdtcgQsZ2n26n2V8Z4", "ABCD-EFGH-IJKL"], "label": "Batch A",
+                        "country_code": "bd"},
+            "response": {"added": 2, "duplicates": [], "skipped_empty": 0,
+                         "codes": [{**_EX_CODE, "status": "unchecked", "redeemed_to": None}]},
+        },
+        {
+            "id": "codes-list", "method": "GET", "path": "/api/codes", "auth": True,
+            "title": "List codes", "desc": "Filter by status; counts per status included.",
+            "params": [
+                ("status", "query · string?", "unused · unchecked · valid · used · expired · invalid"),
+                ("search", "query · string?", "Last 4 characters, label, or redeemed player id"),
+                ("client_ref", "query · string?", "Partners/admins: one client's codes"),
+                ("page", "query · int?", "Default 1"),
+                ("page_size", "query · int?", "Default 50, max 200"),
+            ],
+            "query": {"status": "unused", "page": 1},
+            "response": {"items": [_EX_CODE], "total": 1, "page": 1, "page_size": 50,
+                         "counts": {"unchecked": 3, "valid": 5, "used": 12}},
+        },
+        {
+            "id": "codes-get", "method": "GET", "path": "/api/codes/{code_id}", "auth": True,
+            "path_example": 17,
+            "title": "Code detail + history", "desc": "Full code and everything that happened to it.",
+            "params": [("code_id", "path · int", "Id from the list")],
+            "response": {**_EX_CODE, "code": "EdtcgQsZ2n26n2V8Z4", "history": [
+                {"at": "2026-10-15T11:20:04Z", "kind": "redeemed", "source": "vault",
+                 "by": {"name": "Acme Store", "client_ref": "cl_3f8a9b2c1d4e5f60"},
+                 "player_id": "5421364032", "username": "ErrorSajal", "product_name": "60 UC",
+                 "order_no": "-CART1001-20261015-H8D39Ockh5W8", "status": "redeemed",
+                 "message": ""},
+                {"at": "2026-10-15T09:00:00Z", "kind": "added", "source": "api", "by": None,
+                 "player_id": "", "username": "", "product_name": "", "order_no": "",
+                 "status": "", "message": ""}]},
+        },
+        {
+            "id": "codes-check", "method": "POST", "path": "/api/codes/{code_id}/check",
+            "auth": True, "path_example": 17,
+            "title": "Check a stored code",
+            "desc": "Asks Midasbuy whether it is valid / used / expired / invalid and updates "
+                    "the vault.",
+            "params": [
+                ("player_id", "body · string?", "Player to check against (Midasbuy checks per "
+                                                "player); default is the server's check player"),
+                ("country_code", "body · string?", "Default: the code's storefront"),
+            ],
+            "request": {"player_id": "5421364032"},
+            "response": {"status": "used", "message": "Redeem code is already used.",
+                         "product_name": "", "redeemed_to": _EX_CODE["redeemed_to"],
+                         "code": _EX_CODE},
+        },
+        {
+            "id": "codes-redeem", "method": "POST", "path": "/api/codes/{code_id}/redeem",
+            "auth": True, "path_example": 17,
+            "title": "Redeem a stored code",
+            "desc": "Lookup + validate + redeem to a player. 409 if the code is used or "
+                    "already being redeemed.",
+            "params": [
+                ("player_id", "body · string", "PUBG Mobile UID to receive the UC"),
+                ("country_code", "body · string?", "Default: the code's storefront"),
+            ],
+            "request": {"player_id": "5421364032"},
+            "response": {"success": True, "status": "redeemed", "message": "Redeemed successfully.",
+                         "username": "ErrorSajal", "product_name": "60 UC",
+                         "redeemed_to": _EX_CODE["redeemed_to"], "code": _EX_CODE},
+            "status_values": "player_not_found · invalid · used · expired · redeemed · failed",
+        },
+        {
+            "id": "codes-lookup", "method": "POST", "path": "/api/codes/lookup", "auth": True,
+            "title": "Look up any code",
+            "desc": "Stored copies, redeemed_to and history for any code, stored or not. "
+                    "Doesn't call Midasbuy (free).",
+            "params": [("code", "body · string", "The code")],
+            "request": {"code": "EdtcgQsZ2n26n2V8Z4"},
+            "response": {"code": "••••Z8Z4", "stored": [_EX_CODE],
+                         "redeemed_to": {**_EX_CODE["redeemed_to"], "product_name": "60 UC"},
+                         "history": []},
+        },
+        {
+            "id": "codes-delete", "method": "DELETE", "path": "/api/codes/{code_id}", "auth": True,
+            "path_example": 17,
+            "title": "Remove a code", "desc": "Deletes it from the vault; its history is kept.",
+            "params": [("code_id", "path · int", "Id from the list")],
+            "response": {"deleted": True, "id": 17},
+        },
+    ],
+}
+GROUPS.append(CODE_VAULT_GROUP)
+
+
 def build_context() -> dict:
     """Expand the spec into render-ready data (adds samples + pretty JSON)."""
     # Data endpoints are documented with the secure HMAC-signed helper; the auth
     # endpoints (login / key creation) use plain calls since you have no key yet.
-    signed_groups = {"single", "bulk"}
+    signed_groups = {"single", "bulk", "codes"}
     groups = []
     for g in GROUPS:
         eps = []

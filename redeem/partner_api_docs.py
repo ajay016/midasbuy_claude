@@ -110,8 +110,11 @@ export async function signedRequest(method, path, { params, jsonBody, clientId }
 
 
 def _psub(ep: dict) -> str:
-    """Path with the {client_ref} placeholder replaced by an example value."""
-    return ep["path"].replace("{client_ref}", str(ep.get("path_example", "cl_3f8a9b2c1d4e5f60")))
+    """Path with its placeholder ({client_ref}, {code_id}, ...) replaced by an example."""
+    import re
+
+    path = ep["path"].replace("{client_ref}", str(ep.get("path_example", "cl_3f8a9b2c1d4e5f60")))
+    return re.sub(r"\{[a-z_]+\}", str(ep.get("path_example", "42")), path)
 
 
 def _partner_signed_samples(ep: dict) -> dict:
@@ -329,7 +332,7 @@ GROUPS = [
             {
                 "id": "p-code-status", "method": "POST", "path": "/api/code-status", "auth": True,
                 "attributed": True,
-                "title": "Code status", "desc": "Is a code valid / used / expired / invalid? Does NOT redeem.",
+                "title": "Code status", "desc": "Is a code valid / used / expired / invalid? Does NOT redeem. A used code our app redeemed also returns redeemed_to.",
                 "params": [
                     ("X-Client-Id", "header · string", "client_ref to attribute & meter this call"),
                     ("country_code", "body · string", "Storefront code"),
@@ -363,6 +366,26 @@ GROUPS = [
         ],
     },
 ]
+
+
+def _partner_vault_group() -> dict:
+    """The Code vault endpoints from api_docs, as attributed (X-Client-Id) calls: the
+    codes belong to the client you name, or to you when you send your own ref."""
+    from .api_docs import CODE_VAULT_GROUP
+
+    return {
+        **CODE_VAULT_GROUP,
+        "id": "p-codes",
+        "blurb": CODE_VAULT_GROUP["blurb"] + " As a partner, send a client's X-Client-Id to "
+                 "work in that client's vault, or your own client_ref for your own codes; "
+                 "listing with your own ref shows your clients' codes too (filter with "
+                 "client_ref).",
+        "endpoints": [{**ep, "id": "p-" + ep["id"], "attributed": True}
+                      for ep in CODE_VAULT_GROUP["endpoints"]],
+    }
+
+
+GROUPS.append(_partner_vault_group())
 
 
 def build_partner_context() -> dict:

@@ -130,6 +130,30 @@ def bulk_page(request):
     )
 
 
+@order_required
+def codes_page(request):
+    """Code vault UI (docs/CODE_VAULT.md). Calls /api/codes/* with a short-lived
+    JWT, exactly like the API, so the panel and API can't drift."""
+    from django.conf import settings as dj_settings
+
+    from apiauth.security import make_access_token
+
+    user = request.user
+    if user.is_admin:
+        clients = User.objects.filter(role__in=[User.ROLE_CLIENT, User.ROLE_PARTNER]).order_by("name")
+    elif user.is_partner:
+        clients = user.clients.order_by("name")
+    else:
+        clients = User.objects.none()
+    return render(request, "redeem/codes.html", {
+        "api_token": make_access_token(user.id),
+        "show_owner": user.is_admin or user.is_partner,
+        "clients": clients,
+        "countries": ["bd", "us", "id", "ph", "my", "pk", "in", "tr", "br", "sa"],
+        "default_check_player": getattr(dj_settings, "MIDASBUY_CODE_CHECK_PLAYER_ID", ""),
+    })
+
+
 # ── Team management (admin only) ───────────────────────────────────────────────
 _ROLE_DEFAULT_CAPS = {
     User.ROLE_ADMIN: {"can_order": True, "can_manage_accounts": True, "can_use_api": True},

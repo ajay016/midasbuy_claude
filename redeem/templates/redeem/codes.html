@@ -1,0 +1,251 @@
+{% extends "redeem/base.html" %}
+{% block title %}My Codes · Midasbuy Panel{% endblock %}
+{% block topbar_title %}My Codes{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 style="text-align:left;">My Codes</h1>
+  <div class="sub">Store your codes here, then check, redeem and track them. Codes are kept
+    encrypted and shown masked; open a code to see it in full with its history.
+    {% if show_owner %}You also see your clients' codes.{% endif %}</div>
+</div>
+
+<!-- Add -->
+<div class="card" style="margin-bottom:18px;">
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:start;">
+    <div class="field" style="margin:0;">
+      <label>Add codes <span class="muted" style="font-weight:400;">(one per line)</span></label>
+      <textarea id="newCodes" rows="5" placeholder="EdtcgQsZ2n26n2V8Z4&#10;ABCD-EFGH-IJKL"></textarea>
+    </div>
+    <div>
+      <div class="grid" style="grid-template-columns:1fr 110px;">
+        <div class="field"><label>Label <span class="muted" style="font-weight:400;">(optional)</span></label>
+          <input type="text" id="newLabel" placeholder="e.g. Batch A" /></div>
+        <div class="field"><label>Storefront</label>
+          <select id="newCountry">
+            {% for c in countries %}<option value="{{ c }}">{{ c|upper }}</option>{% endfor %}
+          </select></div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;" onclick="addCodes()">Store codes</button>
+      <div id="addStatus" class="status" style="margin-top:10px;"></div>
+    </div>
+    <div class="field" style="margin:0;">
+      <label>Player for Check / Redeem</label>
+      <input type="text" id="actionPlayer" placeholder="PUBG Mobile Player ID" />
+      <div class="muted" style="font-size:11px;margin-top:6px;">
+        Redeem sends the UC to this player. Check uses it too{% if default_check_player %}
+        (blank = the server's check player){% endif %}.</div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <!-- List -->
+  <div class="card" style="padding:12px 12px;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <select id="fStatus" onchange="loadCodes(1)" style="width:auto;">
+        <option value="">All statuses</option>
+        <option value="unused">Unused (unchecked + valid)</option>
+        <option value="unchecked">Unchecked</option>
+        <option value="valid">Valid</option>
+        <option value="used">Used</option>
+        <option value="expired">Expired</option>
+        <option value="invalid">Invalid</option>
+      </select>
+      <input type="text" id="fSearch" placeholder="Last 4 / label / player id" style="width:auto;flex:1;min-width:160px;"
+             onkeydown="if(event.key==='Enter')loadCodes(1)" />
+      {% if show_owner %}
+      <select id="fClient" onchange="loadCodes(1)" style="width:auto;">
+        <option value="">All owners</option>
+        {% for c in clients %}<option value="{{ c.client_ref }}">{{ c.name }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <button class="btn btn-outline" onclick="loadCodes(1)">Search</button>
+    </div>
+    <div id="counts" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+    <div id="listStatus" class="status"></div>
+    <div style="overflow-x:auto;">
+    <table class="table">
+      <thead><tr>
+        <th>Code</th>{% if show_owner %}<th>Owner</th>{% endif %}<th>Status</th><th>Product</th>
+        <th>Redeemed to</th><th></th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+    </table>
+    </div>
+    <div id="pager" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"></div>
+  </div>
+</div>
+
+<!-- Detail / history -->
+<div id="detailModal" class="modal-backdrop" onclick="if(event.target===this)closeDetail()">
+  <div class="confirm-modal" style="max-width:680px;width:92vw;text-align:left;">
+    <div class="account-name" id="dTitle" style="margin-bottom:10px;">Code</div>
+    <div id="dBody" style="max-height:60vh;overflow:auto;"></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+      <button class="btn btn-outline" onclick="closeDetail()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let API_TOKEN = "{{ api_token|escapejs }}";
+  const SHOW_OWNER = {{ show_owner|yesno:"true,false" }};
+  const headers = () => ({ "Authorization": "Bearer " + API_TOKEN, "Content-Type": "application/json" });
+  async function refreshToken() {
+    try {
+      const r = await fetch("{% url 'panel_api_token' %}", { headers: { "X-Requested-With": "fetch" } });
+      if (!r.ok) return false;
+      API_TOKEN = (await r.json()).token; return true;
+    } catch (e) { return false; }
+  }
+  async function apiFetch(url, build) {
+    let resp = await fetch(url, build());
+    if (resp.status === 401 && await refreshToken()) resp = await fetch(url, build());
+    return resp;
+  }
+  async function api(method, url, body) {
+    const resp = await apiFetch(url, () => ({ method, headers: headers(),
+      body: body === undefined ? undefined : JSON.stringify(body) }));
+    let data = {};
+    try { data = await resp.json(); } catch (e) {}
+    if (!resp.ok) throw new Error(data.detail || ("Request failed (" + resp.status + ")"));
+    return data;
+  }
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const when = (v) => v ? new Date(v).toLocaleString() : "";
+  function setStatus(id, type, html) {
+    const el = document.getElementById(id);
+    el.className = "status" + (html ? " show " + type : ""); el.innerHTML = html || "";
+  }
+  const BADGE = { valid: "badge-green", used: "badge-red", expired: "badge-red", invalid: "badge-red",
+                  unchecked: "badge-grey", redeeming: "badge-grey" };
+  const badge = (s) => `<span class="badge ${BADGE[s] || "badge-grey"}">${esc(s)}</span>`;
+  function redeemedTo(r) {
+    if (!r) return '<span class="muted">—</span>';
+    return `<div style="font-weight:700;">${esc(r.player_id)}</div>`
+         + `<div class="muted" style="font-size:11px;">${esc(r.username || "")} ${esc(when(r.redeemed_at))}</div>`;
+  }
+
+  let page = 1;
+  let CODES = {};          // id -> row, so buttons pass only numeric ids
+  async function loadCodes(p) {
+    page = p || page;
+    const q = new URLSearchParams({ page, page_size: 50,
+      status: document.getElementById("fStatus").value,
+      search: document.getElementById("fSearch").value.trim() });
+    const fc = document.getElementById("fClient");
+    if (fc && fc.value) q.set("client_ref", fc.value);
+    try {
+      const data = await api("GET", "/api/codes?" + q.toString());
+      setStatus("listStatus", "", "");
+      CODES = Object.fromEntries(data.items.map(c => [c.id, c]));
+      const rows = document.getElementById("rows");
+      if (!data.items.length) {
+        rows.innerHTML = `<tr><td colspan="6" class="muted">No codes yet.</td></tr>`;
+      } else {
+        rows.innerHTML = data.items.map(c => `<tr>
+          <td><div style="font-family:ui-monospace,monospace;font-weight:700;">${esc(c.code)}</div>
+              <div class="muted" style="font-size:11px;">${esc(c.label)} ${esc((c.country_code || "").toUpperCase())}</div></td>
+          ${SHOW_OWNER ? `<td class="muted" style="font-size:12px;">${esc(c.owner ? c.owner.name : "")}</td>` : ""}
+          <td>${badge(c.status)}</td>
+          <td class="muted" style="font-size:12px;">${esc(c.product_name)}</td>
+          <td>${redeemedTo(c.redeemed_to)}</td>
+          <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;min-width:150px;">
+            <button class="btn btn-ghost" onclick="checkCode(${c.id})">Check</button>
+            <button class="btn btn-ghost" onclick="redeemCode(${c.id})" ${c.status === "used" ? "disabled" : ""}>Redeem</button>
+            <button class="btn btn-ghost" onclick="showDetail(${c.id})">History</button>
+            <button class="btn btn-ghost" onclick="deleteCode(${c.id})">Delete</button>
+          </div></td></tr>`).join("");
+      }
+      const counts = data.counts || {};
+      document.getElementById("counts").innerHTML = Object.keys(counts).length
+        ? Object.entries(counts).map(([k, v]) => `${esc(k)}: <b>${v}</b>`).join(" · ") : "";
+      const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+      document.getElementById("pager").innerHTML = pages > 1
+        ? `<button class="btn btn-ghost" ${page <= 1 ? "disabled" : ""} onclick="loadCodes(${page - 1})">Prev</button>
+           <span class="muted" style="align-self:center;font-size:12px;">${page} / ${pages}</span>
+           <button class="btn btn-ghost" ${page >= pages ? "disabled" : ""} onclick="loadCodes(${page + 1})">Next</button>` : "";
+    } catch (e) { setStatus("listStatus", "error", esc(e.message)); }
+  }
+
+  async function addCodes() {
+    const codes = document.getElementById("newCodes").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!codes.length) { setStatus("addStatus", "error", "Paste at least one code."); return; }
+    setStatus("addStatus", "loading", '<span class="spinner"></span>Storing…');
+    try {
+      const d = await api("POST", "/api/codes", { codes,
+        label: document.getElementById("newLabel").value.trim(),
+        country_code: document.getElementById("newCountry").value });
+      setStatus("addStatus", "success", `Stored ${d.added} code(s).`
+        + (d.duplicates.length ? ` Skipped ${d.duplicates.length} already stored.` : ""));
+      document.getElementById("newCodes").value = "";
+      loadCodes(1);
+    } catch (e) { setStatus("addStatus", "error", esc(e.message)); }
+  }
+
+  const actionPlayer = () => document.getElementById("actionPlayer").value.trim();
+
+  async function checkCode(id) {
+    setStatus("listStatus", "loading", '<span class="spinner"></span>Checking with Midasbuy…');
+    try {
+      const body = actionPlayer() ? { player_id: actionPlayer() } : {};
+      const d = await api("POST", `/api/codes/${id}/check`, body);
+      const to = d.redeemed_to ? ` Redeemed to player <b>${esc(d.redeemed_to.player_id)}</b>.` : "";
+      setStatus("listStatus", d.status === "valid" ? "success" : "error",
+                `${badge(d.status)} ${esc(d.message)}${to}`);
+      loadCodes();
+    } catch (e) { setStatus("listStatus", "error", esc(e.message)); }
+  }
+
+  async function redeemCode(id) {
+    const masked = (CODES[id] || {}).code || "this code";
+    const player = actionPlayer();
+    if (!player) { setStatus("listStatus", "error", "Enter the Player ID to redeem to (left panel)."); return; }
+    if (!confirm(`Redeem ${masked} to player ${player}? This uses the code.`)) return;
+    setStatus("listStatus", "loading", '<span class="spinner"></span>Redeeming… this can take a while.');
+    try {
+      const d = await api("POST", `/api/codes/${id}/redeem`, { player_id: player });
+      setStatus("listStatus", d.success ? "success" : "error",
+                `${badge(d.status)} ${esc(d.message)}` + (d.username ? ` (${esc(d.username)})` : ""));
+      loadCodes();
+    } catch (e) { setStatus("listStatus", "error", esc(e.message)); loadCodes(); }
+  }
+
+  async function deleteCode(id) {
+    const masked = (CODES[id] || {}).code || "this code";
+    if (!confirm(`Remove ${masked} from the vault? Its history is kept.`)) return;
+    try { await api("DELETE", `/api/codes/${id}`); loadCodes(); }
+    catch (e) { setStatus("listStatus", "error", esc(e.message)); }
+  }
+
+  async function showDetail(id) {
+    document.getElementById("dTitle").textContent = "Loading…";
+    document.getElementById("dBody").innerHTML = "";
+    document.getElementById("detailModal").classList.add("show");
+    try {
+      const c = await api("GET", `/api/codes/${id}`);
+      document.getElementById("dTitle").innerHTML = `Code ${badge(c.status)}`;
+      const hist = (c.history || []).map(h => `<tr>
+          <td class="muted" style="font-size:11px;white-space:nowrap;">${esc(when(h.at))}</td>
+          <td>${esc(h.kind)}${h.status && h.status !== h.kind ? " · " + esc(h.status) : ""}</td>
+          <td class="muted" style="font-size:12px;">${esc(h.player_id)} ${esc(h.username)}</td>
+          <td class="muted" style="font-size:12px;">${esc(h.by ? h.by.name : "")} ${esc(h.source)}</td>
+          <td class="muted" style="font-size:11px;">${esc(h.product_name)} ${esc(h.order_no)} ${esc(h.message)}</td>
+        </tr>`).join("");
+      document.getElementById("dBody").innerHTML = `
+        <div class="field"><label>Full code</label>
+          <input type="text" readonly value="${esc(c.code)}" onclick="this.select()"
+                 style="font-family:ui-monospace,monospace;" /></div>
+        <div class="muted" style="font-size:12px;margin-bottom:10px;">
+          ${esc(c.label)} · ${esc((c.country_code || "").toUpperCase())} · ${esc(c.product_name)}
+          ${c.redeemed_to ? ` · redeemed to <b>${esc(c.redeemed_to.player_id)}</b>` : ""}</div>
+        <table class="table"><thead><tr><th>When</th><th>What</th><th>Player</th><th>By</th><th>Details</th></tr></thead>
+          <tbody>${hist || '<tr><td colspan="5" class="muted">No history.</td></tr>'}</tbody></table>`;
+    } catch (e) { document.getElementById("dBody").innerHTML = `<div class="status show error">${esc(e.message)}</div>`; }
+  }
+  function closeDetail() { document.getElementById("detailModal").classList.remove("show"); }
+
+  loadCodes(1);
+</script>
+{% endblock %}

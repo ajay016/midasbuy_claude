@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 
 from .auth_routes import router as auth_router
 from .bulk_routes import router as bulk_router
+from .code_routes import router as code_router
 from .partner_routes import router as partner_router
 from .dependencies import charge, require_order
 from .schemas import (
@@ -80,6 +81,8 @@ api_app.include_router(auth_router)
 api_app.include_router(bulk_router)
 # Partner self-service under /api/partner/* — every route requires a partner/admin.
 api_app.include_router(partner_router)
+# Code vault under /api/codes/* — store, list, check, redeem, history.
+api_app.include_router(code_router)
 
 
 @api_app.on_event("shutdown")
@@ -330,7 +333,8 @@ async def code_status(body: CodeActionRequest, identity: dict = Depends(require_
     account_id, ssp, cookies = await _select_session(metered=True)
     result = await check_code_status(body.player_id, body.pin_code, body.country_code, ssp, cookies)
     await _report(account_id, result)
-    return result
+    return await sync_to_async(_with_code_records)(
+        identity, body.pin_code, body.player_id, result, redeemed=False)
 
 
 @api_app.post("/redeem-now", response_model=CodeActionResponse, tags=["single"])
@@ -340,7 +344,8 @@ async def redeem_now(body: CodeActionRequest, identity: dict = Depends(require_o
     account_id, ssp, cookies = await _select_session(metered=True)
     result = await redeem_all_in_one(body.player_id, body.pin_code, body.country_code, ssp, cookies)
     await _report(account_id, result)
-    return result
+    return await sync_to_async(_with_code_records)(
+        identity, body.pin_code, body.player_id, result, redeemed=True)
 
 
 @api_app.post("/redeem", response_model=RedeemResponse, tags=["single"])
@@ -378,4 +383,60 @@ async def redeem(body: RedeemRequest, identity: dict = Depends(require_order)):
     # Only judge account health on terminal outcomes (not mid-flow prompts).
     if not (result.verification_required or result.confirmation_required):
         await _report(account_id, result)
+    await sync_to_async(_record_two_step)(identity, body, result)
     return result
+
+
+# ── Code records (docs/CODE_VAULT.md) ──────────────────────────────────────────
+def _with_code_records(identity: dict, code: str, player_id: str, result: dict,
+                       redeemed: bool) -> dict:
+    """Record a /code-status or /redeem-now outcome and, for a used code, add
+    `redeemed_to` when the caller may see it. Never fails the request."""
+    from codes import services as cs
+
+    from .code_routes import _record_redeem_result, _source, _viewer
+
+    try:
+        viewer = _viewer(identity)
+        if redeemed:
+            _record_redeem_result(code, result, viewer, player_id, _source(identity))
+        else:
+            cs.record_check(code, cs.definite_status(result.get("status"), result.get("raw")),
+                            actor=viewer, source=_source(identity),
+                            product_name=result.get("product_name") or "", player_id=player_id)
+        if result.get("status") == "used":
+            result = {**result, "redeemed_to": cs.redeemed_to_for(viewer, code)}
+    except Exception:
+        logger.exception("[CODES] could not record code outcome")
+    return result
+
+
+def _record_two_step(identity: dict, body: RedeemRequest, result) -> None:
+    """Panel two-step /redeem: the check step updates stored codes; the confirm step
+    records the redemption. Adds `redeemed_to` to a used-code answer."""
+    from codes import services as cs
+
+    from .code_routes import _source, _viewer
+
+    try:
+        viewer, source = _viewer(identity), _source(identity)
+        raw = result.raw if isinstance(result.raw, dict) else {}
+        if body.confirm:
+            if result.success:
+                order = (raw.get("result") or {}).get("order_no") or ""
+                cs.record_redemption(body.pin_code, actor=viewer, source=source,
+                                     player_id=body.player_id,
+                                     product_name=body.product_name or "", order_no=order)
+            else:
+                cs.record_redeem_failure(body.pin_code, actor=viewer, source=source,
+                                         player_id=body.player_id, message=result.message)
+            return
+        if result.verification_required:
+            return
+        status = cs.definite_status("valid" if result.confirmation_required else None, raw)
+        cs.record_check(body.pin_code, status, actor=viewer, source=source,
+                        product_name=result.product_name or "", player_id=body.player_id)
+        if status == "used":
+            result.redeemed_to = cs.redeemed_to_for(viewer, body.pin_code)
+    except Exception:
+        logger.exception("[CODES] could not record two-step redeem outcome")

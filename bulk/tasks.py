@@ -141,6 +141,9 @@ def _process_item(job: BulkJob, item: BulkJobItem):
         if out.get("success") or not is_user_error(out):
             report_result(account_id, bool(out.get("success")))
 
+    if item.pin_code and job.job_type in (JobType.VALIDATE, JobType.REDEEM):
+        _record_code_outcome(job, item, out)
+
     item.success = bool(out.get("success"))
     item.status = ItemStatus.SUCCESS if item.success else ItemStatus.FAILED
     item.message = out.get("message", "")
@@ -158,6 +161,25 @@ def _process_item(job: BulkJob, item: BulkJobItem):
         succeeded_items=F("succeeded_items") + (1 if item.success else 0),
         failed_items=F("failed_items") + (0 if item.success else 1),
     )
+
+
+def _record_code_outcome(job: BulkJob, item: BulkJobItem, out: dict) -> None:
+    """Code vault records (docs/CODE_VAULT.md): bulk redeems remember which player got
+    each code; bulk checks update stored codes. Never fails the item."""
+    try:
+        from api.code_routes import _record_redeem_result
+        from codes import services as cs
+
+        actor = job.requested_by
+        if job.job_type == JobType.REDEEM:
+            _record_redeem_result(item.pin_code, out, actor, item.player_id, "bulk")
+        else:
+            cs.record_check(item.pin_code, cs.definite_status(out.get("status"), out.get("raw")),
+                            actor=actor, source="bulk",
+                            product_name=out.get("product_name") or "",
+                            player_id=item.player_id)
+    except Exception:
+        logger.exception("[BULK] could not record code outcome for item %s", item.pk)
 
 
 def _deliver_webhook(job: BulkJob) -> None:
