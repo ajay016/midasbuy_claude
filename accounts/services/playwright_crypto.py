@@ -1509,11 +1509,22 @@ def _create_cached_session(
 
         logger.info("[CRYPTO] warming cached page %s", redeem_url)
         page.goto(redeem_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        # Wait for exactly what lookups need (page token + xMidas engine) instead
+        # of the full "load" event (trackers/media, up to 20s) plus a fixed 2s
+        # sleep. Measured in Docker: ready at ~6s vs "load" at 7s+ on a good day.
         try:
-            page.wait_for_load_state("load", timeout=20_000)
+            page.wait_for_function(
+                "() => !!document.getElementById('xMidasToken')?.value"
+                " && typeof window.xMidas === 'function'",
+                timeout=20_000,
+            )
         except PWTimeout:
-            logger.warning("[CRYPTO] page load event timed out; continuing with initialized DOM")
-        page.wait_for_timeout(2_000)
+            logger.warning("[CRYPTO] xMidas not ready early; falling back to load event")
+            try:
+                page.wait_for_load_state("load", timeout=20_000)
+            except PWTimeout:
+                logger.warning("[CRYPTO] page load event timed out; continuing with initialized DOM")
+            page.wait_for_timeout(2_000)
         _restore_server_data_snapshot(page, storage_state_path)
         logger.info("[CRYPTO] cached page ready url=%s", page.url)
 
