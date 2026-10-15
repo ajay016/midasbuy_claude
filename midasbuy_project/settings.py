@@ -203,7 +203,9 @@ MIDASBUY_WARM_COUNTRIES = env.list("MIDASBUY_WARM_COUNTRIES", default=["bd"])
 # Seconds between background keep-warm sweeps. 0 disables it (sessions then go stale
 # and the NEXT request pays a cold rebuild — the "occasional slow lookup"). A few
 # minutes keeps every account's cached browser session hot so real requests stay fast.
-MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=300)
+# A sweep is nearly free when sessions are still valid, and it is what picks up
+# a session renewed by a scheduled re-login (Celery worker), so keep it short.
+MIDASBUY_WARM_INTERVAL = env.int("MIDASBUY_WARM_INTERVAL", default=60)
 
 # Seconds a successful player lookup (player id -> name) is cached in Redis so
 # repeat lookups are instant and don't hit Midasbuy again. 0 disables the cache.

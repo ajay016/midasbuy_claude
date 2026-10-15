@@ -84,6 +84,19 @@ async def warm_account_session(storage_state_path: str, country_code: str = "bd"
     )
 
 
+def schedule_warm(storage_state_path: str, countries) -> None:
+    """Fire-and-forget: warm this account's browser session(s) on its own browser
+    thread right now. Used after a successful login: the new session file makes
+    the previously warm session stale, so without this the FIRST lookup after a
+    login paid the whole cold start (~25s). Safe to call from any sync thread."""
+    from accounts.services.playwright_crypto import warm_cached_session
+
+    executor = _browser_executor(storage_state_path)
+    for country in countries:
+        executor.submit(_run_browser_call_sync, warm_cached_session,
+                        (storage_state_path, country))
+
+
 async def shutdown_browser_worker() -> None:
     from accounts.services.playwright_crypto import close_cached_browser_sessions
 

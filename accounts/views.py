@@ -63,7 +63,26 @@ def account_login(request, pk):
         # Surface the reason in the panel instead of a blank HTTP 500.
         logger.exception("[MIDASBUY] login crashed account_id=%s", acct.pk)
         return JsonResponse({"success": False, "message": f"Login crashed: {exc}"[:500]})
+    if result.success:
+        _warm_after_login(acct)
     return JsonResponse({"success": result.success, "message": result.message})
+
+
+def _warm_after_login(acct) -> None:
+    """Start warming the fresh session in the background so the first lookup
+    after a login is fast. The panel and the API run in the same process, so this
+    warms the very cache the API uses. Never let it affect the login response."""
+    try:
+        from api.app import _resolve_session_sync
+        from api.service import schedule_warm
+
+        ssp, _ = _resolve_session_sync(acct.pk)
+        if ssp:
+            countries = [c.strip().lower() for c in settings.MIDASBUY_WARM_COUNTRIES if c.strip()]
+            schedule_warm(ssp, countries or ["bd"])
+            logger.info("[MIDASBUY] warming new session after login account_id=%s", acct.pk)
+    except Exception:
+        logger.exception("[MIDASBUY] post-login warm-up could not be scheduled")
 
 
 @manage_accounts_required
