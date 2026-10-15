@@ -21,7 +21,7 @@ from accounts.utils import (
     save_json_file,
     save_text_file,
 )
-from .browser_service import get_browser_context_options, get_browser_launch_options
+from .browser_service import get_browser_context_options, launch_login_browser
 from .login_flow import run_midasbuy_login_flow
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def run_browser_login_session(account, session_dir: str) -> dict:
     logger.info("[MIDASBUY] session_dir=%s", session_dir)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**get_browser_launch_options())
+        browser = launch_login_browser(p)
         context = browser.new_context(**get_browser_context_options())
 
         context.add_init_script(

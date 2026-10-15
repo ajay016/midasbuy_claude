@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 
 from django.conf import settings
@@ -11,6 +12,8 @@ from apiauth.panel import manage_accounts_required
 from .forms import MidasbuyAccountForm
 from .models import MidasbuyAccount
 from .services.login_service import login_account_and_persist
+
+logger = logging.getLogger(__name__)
 
 
 @manage_accounts_required
@@ -54,7 +57,12 @@ def account_unflag(request, pk):
 def account_login(request, pk):
     """Trigger Playwright login for this account."""
     acct = get_object_or_404(MidasbuyAccount, pk=pk)
-    result = login_account_and_persist(acct)
+    try:
+        result = login_account_and_persist(acct)
+    except Exception as exc:
+        # Surface the reason in the panel instead of a blank HTTP 500.
+        logger.exception("[MIDASBUY] login crashed account_id=%s", acct.pk)
+        return JsonResponse({"success": False, "message": f"Login crashed: {exc}"[:500]})
     return JsonResponse({"success": result.success, "message": result.message})
 
 
