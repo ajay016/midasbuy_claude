@@ -39,6 +39,11 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0  # talk to the redis service, not localhost
+      # The panel's "Login / Refresh" button runs the headful login browser HERE
+      # (in web, not in worker). Empty = invisible virtual display (Xvfb). To WATCH
+      # it on Windows, run an X server (e.g. VcXsrv, "Disable access control") and
+      # set LOGIN_DISPLAY=host.docker.internal:0.0 in .env.
+      - DISPLAY=${LOGIN_DISPLAY:-}
     volumes:
       - .:/app                          # live code reload in dev
       - ./midasbuy_sessions:/app/midasbuy_sessions
@@ -61,6 +66,7 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DISPLAY=${LOGIN_DISPLAY:-}      # scheduled re-logins; same rule as web
     volumes:
       - .:/app
       - ./midasbuy_sessions:/app/midasbuy_sessions

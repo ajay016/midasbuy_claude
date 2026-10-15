@@ -8,11 +8,19 @@
     ## without bash
     docker compose exec worker xvfb-run -a celery -A midasbuy_project worker -l info --concurrency=2
 
-## for viewing the browser
+## Watching the login browser (Docker)
 
-    docker compose exec worker bash
-    export DISPLAY=host.docker.internal:0.0
-    celery -A midasbuy_project worker -l info --concurrency=5
+The panel's **Login / Refresh** button runs the login browser in the **web**
+container (not the worker), on an invisible virtual display by default. To see
+it on Windows:
+
+1. Start **XLaunch** (VcXsrv): Multiple windows -> Display number `0` ->
+   Start no client -> tick **Disable access control** -> Finish.
+2. In `.env` set `LOGIN_DISPLAY=host.docker.internal:0.0`
+3. `docker compose up -d` (recreates web/worker with the new display)
+
+Clear `LOGIN_DISPLAY` again to go back to invisible logins. No need to start an
+extra Celery worker for this — `docker compose up` already runs one.
 
 ## Celery beat (scheduled bot-account re-login)
 
